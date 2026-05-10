@@ -11,6 +11,7 @@ import { PageHeader } from "./components/dashboard/page-header";
 import { Particles } from "./components/particles";
 import { apiConfigured, memoryQueryApi } from "../lib/api";
 import { useMemoryChunks } from "./hooks/useHiveMind";
+import { useMissions } from "./store";
 import { Skeleton } from "./components/ui/skeleton";
 
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
@@ -101,7 +102,7 @@ const retrievedMemories = [
   { id: "MEM-1540", t: "Hero video storyboard reference · 00:42 narrative arc",   agent: "Lumen",  c: "#3b82f6", rel: 0.82, age: "18d" },
 ];
 
-const historicalMissions = [
+const FALLBACK_HISTORICAL = [
   { id: "M-229", t: "Solana Growth Strategy",   agents: 8, ms: "186h", recall: 24, c: "#22d3ee" },
   { id: "M-218", t: "Cross-Vault Reconciliation", agents: 4, ms: "62h", recall: 12,  c: "#10b981" },
   { id: "M-204", t: "Brand Refresh Q1",          agents: 6, ms: "112h", recall: 38, c: "#a855f7" },
@@ -239,6 +240,22 @@ export default function MemoryExplorer() {
   const [hover, setHover] = useState<string | null>(null);
   const [tps, setTps] = useState(184);
   const { chunks, loading: chunksLoading } = useMemoryChunks();
+  const { missions } = useMissions();
+
+  const historicalMissions = useMemo(() => {
+    if (apiConfigured() && missions.length > 0) {
+      const colors = ["#22d3ee", "#10b981", "#a855f7", "#3b82f6"];
+      return missions.slice(0, 4).map((m, i) => ({
+        id: m.id,
+        t: m.title,
+        agents: m.agents.length,
+        ms: m.eta ?? "—",
+        recall: 8 + (i * 7) % 33,
+        c: colors[i % colors.length]!,
+      }));
+    }
+    return FALLBACK_HISTORICAL;
+  }, [missions]);
   const [searchBusy, setSearchBusy] = useState(false);
   const [searchNote, setSearchNote] = useState<string | null>(null);
   const [searchHits, setSearchHits] = useState<

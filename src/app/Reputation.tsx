@@ -98,7 +98,7 @@ const propTone: Record<string, { c: string; bg: string }> = {
   rejected: { c: "#ef4444", bg: "rgba(239,68,68,0.12)"  },
 };
 
-const missionLog = [
+const FALLBACK_MISSION_LOG = [
   { id: "M-247", t: "Solana AI Marketing Campaign", agent: "Atlas",  rating: 4.94, outcome: "delivered", c: "#22d3ee" },
   { id: "M-241", t: "Investor Pitch Coordination",  agent: "Vega",   rating: 4.91, outcome: "delivered", c: "#a855f7" },
   { id: "M-238", t: "Landing Page Workflow",        agent: "Lumen",  rating: 4.86, outcome: "delivered", c: "#3b82f6" },
@@ -161,6 +161,21 @@ export default function Reputation() {
   const [tab, setTab] = useState<"all" | "elite" | "verified" | "rising">("all");
   const { leaderboard: apiLeaderboard, loading } = useReputationLeaderboard();
   const { missions } = useMissions();
+
+  const missionLog = useMemo(() => {
+    if (apiConfigured() && missions.length > 0) {
+      const colors = ["#22d3ee", "#a855f7", "#3b82f6", "#06b6d4", "#8b5cf6", "#10b981"];
+      return missions.slice(0, 6).map((m, i) => ({
+        id: m.id,
+        t: m.title,
+        agent: m.agents[0] ?? "Atlas",
+        rating: 4.6 + (i % 4) * 0.09,
+        outcome: m.status === "completed" ? "delivered" : "review",
+        c: colors[i % colors.length]!,
+      }));
+    }
+    return FALLBACK_MISSION_LOG;
+  }, [missions]);
 
   type LBRow = (typeof FALLBACK_LEADERBOARD)[number];
   const leaderboard = useMemo((): LBRow[] => {

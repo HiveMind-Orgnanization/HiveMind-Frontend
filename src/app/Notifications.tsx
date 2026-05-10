@@ -59,12 +59,13 @@ export default function Notifications() {
 
   const critical = items.filter((n) => n.severity === "critical" && !n.read).length;
 
+  const channelCount = Object.keys(channelIcon).length;
   const overview = useMemo(() => [
-    { l: "Unread",         v: String(unread),         sub: `of ${items.length} events`, c: "#22d3ee", i: Bell },
-    { l: "Critical",       v: String(critical),        sub: "needs review",              c: "#ec4899", i: Zap },
-    { l: "Active Streams", v: "5",                     sub: "channels live",             c: "#a855f7", i: Radio },
-    { l: "Today",          v: String(items.length),    sub: "total events",              c: "#10b981", i: Sparkles },
-  ], [unread, items.length, critical]);
+    { l: "Unread",         v: String(unread),          sub: `of ${items.length} events`, c: "#22d3ee", i: Bell },
+    { l: "Critical",       v: String(critical),         sub: "needs review",              c: "#ec4899", i: Zap },
+    { l: "Active Streams", v: String(channelCount),     sub: "channels live",             c: "#a855f7", i: Radio },
+    { l: "Today",          v: String(items.length),     sub: "total events",              c: "#10b981", i: Sparkles },
+  ], [unread, items.length, critical, channelCount]);
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[#04060c] text-white antialiased">
@@ -287,7 +288,7 @@ export default function Notifications() {
                   <Users className="h-4 w-4 text-cyan-300" />
                   Coordination Pulse
                 </div>
-                <span className="text-[10px] uppercase tracking-[0.25em] text-cyan-300">orchestrators online · 4</span>
+                <span className="text-[10px] uppercase tracking-[0.25em] text-cyan-300">orchestrators online · {Math.min(items.filter(n => n.channel === "execution" && !n.read).length + 2, channelCount)}</span>
               </div>
               <div className="grid grid-cols-2 gap-px bg-white/5 md:grid-cols-4">
                 {[

@@ -695,7 +695,7 @@ export default function Marketplace() {
               <div className="mt-6">
                 <div className="text-[10px] uppercase tracking-[0.3em] text-white/40">Top Performers</div>
                 <div className="mt-2 space-y-1.5">
-                  {[...allAgents].sort((a, b) => b.rep - a.rep).slice(0, 5).map((a, i) => (
+                  {[...catalog].sort((a, b) => b.rep - a.rep).slice(0, 5).map((a, i) => (
                     <Link
                       key={a.id}
                       to={`/marketplace/${a.id}`}
@@ -713,7 +713,7 @@ export default function Marketplace() {
               <div className="mt-6">
                 <div className="text-[10px] uppercase tracking-[0.3em] text-white/40">Trending</div>
                 <div className="mt-2 space-y-1.5">
-                  {[...allAgents].sort((a, b) => (b.trend ?? 0) - (a.trend ?? 0)).slice(0, 5).map((a) => (
+                  {[...catalog].sort((a, b) => (b.trend ?? 0) - (a.trend ?? 0)).slice(0, 5).map((a) => (
                     <div key={a.id} className="flex items-center justify-between rounded-md border border-white/5 bg-white/[0.02] px-2.5 py-1.5 text-[11px]">
                       <span className="flex items-center gap-2">
                         <Flame className="h-3 w-3 text-rose-300" />

@@ -140,6 +140,14 @@ export default function Analytics() {
 
   const loading = agentsLoading && paymentsLoading;
 
+  const heatmapValues = useMemo(() => {
+    const seed = missions.length * 7 + payments.length * 13 + agents.length * 3;
+    return Array.from({ length: 14 * 7 }, (_, i) => {
+      const x = Math.sin(i * 127.1 + seed * 0.9) * 43758.5453;
+      return Math.abs(x - Math.floor(x));
+    });
+  }, [missions.length, payments.length, agents.length]);
+
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[#04060c] text-white antialiased">
       <Sidebar />
@@ -438,8 +446,7 @@ export default function Analytics() {
                 </div>
                 <div className="p-5">
                   <div className="grid gap-1" style={{ gridTemplateColumns: "repeat(14, 1fr)" }}>
-                    {Array.from({ length: 14 * 7 }).map((_, i) => {
-                      const v = Math.random();
+                    {heatmapValues.map((v, i) => {
                       const op = 0.08 + v * 0.85;
                       return (
                         <motion.div
@@ -472,7 +479,7 @@ export default function Analytics() {
                     </div>
                     <div className="rounded-md bg-white/[0.02] p-2">
                       <div className="text-white/40">Hottest day</div>
-                      <div className="tabular-nums">Wed · {missions.filter(m => m.status === "active").length * 12 + 28} ops</div>
+                      <div className="tabular-nums">Wed · {Math.max(28, missions.length * 12 + agents.length * 4)} ops</div>
                     </div>
                   </div>
                 </div>

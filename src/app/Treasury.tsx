@@ -27,7 +27,7 @@ function Card({ children, className = "" }: { children: React.ReactNode; classNa
   );
 }
 
-const wallets = [
+const STATIC_WALLETS = [
   { name: "Treasury Vault",  addr: "7xKn…42aF", balance: 2418.62, kind: "Multisig 3/5", c: "#22d3ee", available: 1842.10 },
   { name: "Mission Reserve", addr: "9aB2…71cD", balance: 612.40,  kind: "Operating",   c: "#a855f7", available: 412.40 },
   { name: "Agent Payouts",   addr: "4cE9…22bF", balance: 184.92,  kind: "Streaming",   c: "#10b981", available: 184.92 },
@@ -138,6 +138,22 @@ export default function Treasury() {
     }
     return FALLBACK_TX_FEED;
   }, [payments]);
+
+  const wallets = useMemo(() => {
+    if (apiConfigured() && missions.length > 0) {
+      const totalBudget = missions.reduce((s, m) => s + m.budget, 0);
+      const activeBudget = missions.filter(m => m.status === "active").reduce((s, m) => s + m.budget, 0);
+      const payoutTotal = payments.reduce((s, p) => s + p.amountSol, 0);
+      const completedBudget = missions.filter(m => m.status === "completed").reduce((s, m) => s + m.budget, 0);
+      return [
+        { name: "Mission Reserve",  addr: "on-chain", balance: totalBudget,       kind: "All Missions",    c: "#22d3ee", available: totalBudget - activeBudget },
+        { name: "Active Escrow",    addr: "locked",   balance: activeBudget,       kind: "Running",        c: "#f59e0b", available: 0 },
+        { name: "Agent Payouts",    addr: "settled",  balance: payoutTotal,        kind: "Streaming",      c: "#10b981", available: payoutTotal },
+        { name: "Completed Vault",  addr: "released", balance: completedBudget,    kind: "Released",       c: "#a855f7", available: completedBudget },
+      ];
+    }
+    return STATIC_WALLETS;
+  }, [missions, payments]);
 
   const total = wallets.reduce((s, w) => s + w.balance, 0);
   const available = wallets.reduce((s, w) => s + w.available, 0);
