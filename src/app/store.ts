@@ -67,16 +67,13 @@ const seed: Mission[] = [
 ];
 
 function read(): Mission[] {
-  if (typeof window === "undefined") return seed;
+  if (typeof window === "undefined") return [];
   try {
     const raw = localStorage.getItem(KEY);
-    if (!raw) {
-      localStorage.setItem(KEY, JSON.stringify(seed));
-      return seed;
-    }
+    if (!raw) return [];
     return JSON.parse(raw);
   } catch {
-    return seed;
+    return [];
   }
 }
 
@@ -99,7 +96,7 @@ export function useMissions() {
   const { connected, publicKey } = useWallet();
   const walletPk = publicKey?.toBase58() ?? null;
 
-  const [missions, setMissions] = useState<Mission[]>(() => connected ? read() : []);
+  const [missions, setMissions] = useState<Mission[]>([]);
 
   // Clear missions immediately when wallet disconnects; reload when it connects
   useEffect(() => {
@@ -124,11 +121,18 @@ export function useMissions() {
   useEffect(() => {
     if (!connected) return;
     let cancelled = false;
+    const seedIds = new Set(seed.map((s) => s.id));
     const pull = async () => {
       const remote = await fetchMissionsApi();
       if (cancelled || remote === null) return;
-      const merged = mergeRemoteWithLocal(remote, read());
-      write(merged);
+      const local = read();
+      if (remote.length === 0) {
+        // Server has no missions for this wallet — remove any auto-seeded demo missions
+        // but preserve any user-created local missions (ids not in the seed set).
+        write(local.filter((m) => !seedIds.has(m.id)));
+      } else {
+        write(mergeRemoteWithLocal(remote, local));
+      }
       window.dispatchEvent(new CustomEvent("hm-missions-updated"));
     };
     void pull();
