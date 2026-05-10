@@ -167,17 +167,36 @@ export async function swarmRunMissionApi(
 ): Promise<{ ok: true; data: SwarmRunResult } | { ok: false; status: number; message: string }> {
   if (!apiConfigured()) return { ok: false, status: 0, message: "API is disabled in this build." };
   try {
+    // POST returns immediately with a jobId (202) — backend runs swarm async.
     const r = await apiFetch(`/api/missions/${encodeURIComponent(missionId)}/swarm-run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title: ctx.title, objective: ctx.objective }),
     });
     const j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!r.ok) {
-      const msg = typeof (j as any).message === "string" ? (j as any).message : `Request failed (${r.status}).`;
+    if (!r.ok && r.status !== 202) {
+      const msg = typeof j.message === "string" ? j.message : `Request failed (${r.status}).`;
       return { ok: false, status: r.status, message: msg };
     }
-    return { ok: true, data: j as SwarmRunResult };
+    const jobId = typeof j.jobId === "string" ? j.jobId : null;
+    if (!jobId) {
+      // Legacy sync response (old backend) — return directly.
+      return { ok: true, data: j as SwarmRunResult };
+    }
+
+    // Poll until done (max 8 minutes, 4-second intervals).
+    for (let i = 0; i < 120; i++) {
+      await new Promise<void>((res) => setTimeout(res, 4000));
+      const poll = await apiFetch(
+        `/api/missions/${encodeURIComponent(missionId)}/swarm-status/${encodeURIComponent(jobId)}`,
+      );
+      if (!poll.ok) return { ok: false, status: poll.status, message: `Status check failed (${poll.status}).` };
+      const s = (await poll.json()) as { status: string; data?: SwarmRunResult; error?: string };
+      if (s.status === "done") return { ok: true, data: s.data! };
+      if (s.status === "failed") return { ok: false, status: 500, message: s.error ?? "Swarm run failed." };
+      // status === "running" — keep polling
+    }
+    return { ok: false, status: 408, message: "Swarm timed out waiting for results (8 min)." };
   } catch {
     return { ok: false, status: 0, message: "Could not reach the backend. Is it running on port 8787?" };
   }
