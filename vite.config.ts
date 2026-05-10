@@ -3,6 +3,7 @@ import path from 'path'
 import fs from 'fs'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
+import { nodePolyfills } from 'vite-plugin-node-polyfills'
 
 // Serve Docusaurus static build at /docs/* without SPA fallback intercepting
 function docsStaticPlugin() {
@@ -63,6 +64,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [
+      nodePolyfills({ globals: { Buffer: true, global: true, process: true } }),
       docsStaticPlugin(),
       figmaAssetResolver(),
       react(),
