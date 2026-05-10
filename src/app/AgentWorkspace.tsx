@@ -26,6 +26,7 @@ import {
   invokeAgentApi,
   putMissionWorkspaceSnapshotApi,
   swarmRunMissionApi,
+  type SwarmProgress,
   type MissionArtifact,
   type SwarmRunResult,
 } from "../lib/api";
@@ -1215,10 +1216,70 @@ function AgentWorkspaceMissionBody({
       ]);
 
       // Swarm run: one task per role/agent (6-agent main feature).
-      const swarm = await swarmRunMissionApi(mission.id, {
-        title: mission.title,
-        objective: mission.objective,
-      });
+      const ROLE_COLORS: Record<string, string> = {
+        Strategy: "#22d3ee", Research: "#a855f7", Design: "#3b82f6",
+        Development: "#0ea5e9", Marketing: "#ec4899", Treasury: "#10b981",
+        Analytics: "#8b5cf6", Coordination: "#06b6d4", Memory: "#f59e0b",
+      };
+      const swarm = await swarmRunMissionApi(
+        mission.id,
+        { title: mission.title, objective: mission.objective },
+        {
+          onProgress: (progress: SwarmProgress) => {
+            const ts = new Date().toLocaleTimeString("en-US", { hour12: false });
+            // Add a message bubble for each newly completed agent
+            const lastResult = progress.partialResults[progress.partialResults.length - 1];
+            if (lastResult && lastResult.replySnippet.trim().length > 0) {
+              const color = ROLE_COLORS[lastResult.role] ?? "#94a3b8";
+              setMessages((prev) => {
+                // Don't duplicate
+                const alreadyHas = prev.some((m) => m.agent === lastResult.role && m.state === "executing");
+                if (alreadyHas) return prev;
+                return [
+                  ...prev,
+                  {
+                    id: Date.now() + Math.random(),
+                    agent: lastResult.role,
+                    color,
+                    text: lastResult.replySnippet,
+                    state: "executing" as const,
+                    ts,
+                  },
+                ];
+              });
+            }
+            // Update active agent display to show current running role
+            if (progress.currentRole) {
+              const color = ROLE_COLORS[progress.currentRole] ?? "#94a3b8";
+              setSelectedAgent(progress.currentRole);
+              setMessages((prev) => {
+                const alreadyThinking = prev.some((m) => m.agent === progress.currentRole && m.state === "thinking");
+                if (alreadyThinking) return prev;
+                return [
+                  ...prev,
+                  {
+                    id: Date.now() + Math.random(),
+                    agent: progress.currentRole!,
+                    color,
+                    text: `${progress.currentRole} agent is analyzing and generating output…`,
+                    state: "thinking" as const,
+                    ts,
+                  },
+                ];
+              });
+            }
+            // Log line for completed roles
+            setLogLines((prev) => [
+              ...prev,
+              {
+                ts: Date.now(),
+                agent: lastResult?.role ?? "HiveMind",
+                message: `[done] ${lastResult?.role ?? ""} · ${progress.completedRoles.length}/${progress.completedRoles.length + 1} roles`,
+              },
+            ].slice(-200));
+          },
+        },
+      );
       setAutoInvoking(false);
       if (!swarm.ok) {
         // allow retry on failure

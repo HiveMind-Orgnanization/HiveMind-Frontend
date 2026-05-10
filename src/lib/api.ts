@@ -161,9 +161,16 @@ export type SwarmRunResult = {
   }>;
 };
 
+export type SwarmProgress = {
+  currentRole: string | null;
+  completedRoles: string[];
+  partialResults: Array<{ role: string; agentName: string; replySnippet: string; provider: string; model: string }>;
+};
+
 export async function swarmRunMissionApi(
   missionId: string,
   ctx: { title: string; objective: string },
+  options?: { onProgress?: (progress: SwarmProgress) => void },
 ): Promise<{ ok: true; data: SwarmRunResult } | { ok: false; status: number; message: string }> {
   if (!apiConfigured()) return { ok: false, status: 0, message: "API is disabled in this build." };
   try {
@@ -184,6 +191,7 @@ export async function swarmRunMissionApi(
       return { ok: true, data: j as SwarmRunResult };
     }
 
+    let reportedCount = 0;
     // Poll until done (max 8 minutes, 4-second intervals).
     for (let i = 0; i < 120; i++) {
       await new Promise<void>((res) => setTimeout(res, 4000));
@@ -191,7 +199,20 @@ export async function swarmRunMissionApi(
         `/api/missions/${encodeURIComponent(missionId)}/swarm-status/${encodeURIComponent(jobId)}`,
       );
       if (!poll.ok) return { ok: false, status: poll.status, message: `Status check failed (${poll.status}).` };
-      const s = (await poll.json()) as { status: string; data?: SwarmRunResult; error?: string };
+      const s = (await poll.json()) as {
+        status: string;
+        data?: SwarmRunResult;
+        error?: string;
+        progress?: SwarmProgress;
+      };
+      // Emit new partial results since last poll.
+      if (s.progress && options?.onProgress) {
+        const newCount = s.progress.partialResults.length;
+        if (newCount > reportedCount) {
+          reportedCount = newCount;
+          options.onProgress(s.progress);
+        }
+      }
       if (s.status === "done") return { ok: true, data: s.data! };
       if (s.status === "failed") return { ok: false, status: 500, message: s.error ?? "Swarm run failed." };
       // status === "running" — keep polling
