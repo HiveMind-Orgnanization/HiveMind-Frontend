@@ -9,6 +9,7 @@ import { TopNav } from "./components/dashboard/topnav";
 import { PageHeader } from "./components/dashboard/page-header";
 import { Particles } from "./components/particles";
 import { Skeleton } from "./components/ui/skeleton";
+import { WalletGate } from "./components/WalletGate";
 import { useAgents } from "./hooks/useHiveMind";
 import { usePayments } from "./hooks/useHiveMind";
 import { useMissions } from "./store";
@@ -56,7 +57,7 @@ export default function Analytics() {
   const [range, setRange] = useState<"24h" | "7d" | "30d" | "90d">("7d");
   const { agents, loading: agentsLoading } = useAgents();
   const { payments, loading: paymentsLoading } = usePayments();
-  const { missions } = useMissions();
+  const { missions, walletConnected } = useMissions();
 
   const kpis = useMemo(() => {
     const totalMissions = missions.length;
@@ -154,7 +155,7 @@ export default function Analytics() {
       <div className="flex min-w-0 flex-1 flex-col">
         <TopNav />
 
-        <div className="relative min-h-0 flex-1 overflow-y-auto">
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
           <div
             className="pointer-events-none absolute inset-0 opacity-50"
             style={{
@@ -163,7 +164,7 @@ export default function Analytics() {
             }}
           />
           <Particles count={22} />
-
+          <WalletGate connected={walletConnected}>
           <div className="relative px-6 py-6">
             <PageHeader
               title="Analytics Dashboard"
@@ -521,6 +522,7 @@ export default function Analytics() {
               </div>
             </Card>
           </div>
+          </WalletGate>
         </div>
       </div>
     </div>

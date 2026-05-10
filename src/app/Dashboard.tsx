@@ -6,11 +6,13 @@ import {
   TrendingUp, Wallet, Brain, Database,
   Gauge, Zap, Sparkles, Inbox,
 } from "lucide-react";
+
 import { Sidebar } from "./components/dashboard/sidebar";
 import { TopNav } from "./components/dashboard/topnav";
 import { CoordGraph } from "./components/dashboard/coord-graph";
 import { Particles } from "./components/particles";
 import { TrialBanner } from "./components/TrialBanner";
+import { WalletGate } from "./components/WalletGate";
 import { useMissions } from "./store";
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { toast } from "sonner";
@@ -55,7 +57,7 @@ function Sparkline({ color = "#22d3ee" }: { color?: string }) {
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { missions, remove, reset, patchLocal } = useMissions();
+  const { missions, remove, reset, patchLocal, walletConnected } = useMissions();
   const [activeId, setActiveId] = useState<string | null>(null);
   const active = missions.find((m) => m.id === activeId) ?? missions[0];
   const paused = active?.status === "paused";
@@ -221,6 +223,11 @@ export default function Dashboard() {
   }, [missions, active]);
 
   if (missions.length === 0) {
+    const emptyIcon = walletConnected ? <Inbox className="h-6 w-6 text-cyan-300" /> : <Wallet className="h-6 w-6 text-cyan-300" />;
+    const emptyTitle = walletConnected ? "No active missions" : "Connect your wallet";
+    const emptyBody = walletConnected
+      ? "Deploy your first autonomous workforce to get started. The HiveMind orchestrator is online and ready."
+      : "Your missions are tied to your Solana wallet. Connect to access your workspace and on-chain data.";
     return (
       <div className="flex h-screen w-full overflow-hidden bg-[#04060c] text-white antialiased">
         <Sidebar />
@@ -240,29 +247,38 @@ export default function Dashboard() {
                 <div className="absolute inset-0 opacity-60" style={{ background: "radial-gradient(ellipse at 50% 0%, rgba(34,211,238,0.18), transparent 60%)" }} />
                 <div className="relative">
                   <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-cyan-300/30 bg-cyan-300/10">
-                    <Inbox className="h-6 w-6 text-cyan-300" />
+                    {emptyIcon}
                   </div>
-                  <h2 className="mt-5 text-2xl tracking-tight">No active missions</h2>
-                  <p className="mt-2 text-sm text-white/55">
-                    Deploy your first autonomous workforce to get started. The HiveMind orchestrator is online and ready.
-                  </p>
-                  <div className="mt-6 flex justify-center gap-2">
-                    <Link
-                      to="/missions/new"
-                      className="group relative inline-flex items-center gap-2 overflow-hidden rounded-full px-5 py-2.5 text-sm text-black"
-                    >
-                      <span className="absolute inset-0 bg-gradient-to-r from-cyan-300 to-purple-300" />
-                      <Rocket className="relative h-4 w-4" />
-                      <span className="relative">Create First Mission</span>
-                    </Link>
-                    <button
-                      onClick={reset}
-                      className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.03] px-5 py-2.5 text-sm text-white/80 hover:border-cyan-300/40"
-                    >
-                      <RotateCcw className="h-4 w-4 text-cyan-300" />
-                      Load Demo Mission
-                    </button>
-                  </div>
+                  <h2 className="mt-5 text-2xl tracking-tight">{emptyTitle}</h2>
+                  <p className="mt-2 text-sm text-white/55">{emptyBody}</p>
+                  {walletConnected && (
+                    <div className="mt-6 flex justify-center gap-2">
+                      <Link
+                        to="/missions/new"
+                        className="group relative inline-flex items-center gap-2 overflow-hidden rounded-full px-5 py-2.5 text-sm text-black"
+                      >
+                        <span className="absolute inset-0 bg-gradient-to-r from-cyan-300 to-purple-300" />
+                        <Rocket className="relative h-4 w-4" />
+                        <span className="relative">Create First Mission</span>
+                      </Link>
+                      <button
+                        onClick={reset}
+                        className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.03] px-5 py-2.5 text-sm text-white/80 hover:border-cyan-300/40"
+                      >
+                        <RotateCcw className="h-4 w-4 text-cyan-300" />
+                        Load Demo Mission
+                      </button>
+                    </div>
+                  )}
+                  {!walletConnected && (
+                    <div className="mt-6 flex items-center justify-center gap-2 rounded-xl border border-cyan-300/20 bg-cyan-300/5 px-4 py-2 text-xs text-cyan-300">
+                      <span className="relative flex h-1.5 w-1.5">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400 opacity-75" />
+                        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-cyan-400" />
+                      </span>
+                      Use the Connect Wallet button in the top-right corner
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

@@ -12,6 +12,7 @@ import { Particles } from "./components/particles";
 import { apiConfigured, memoryQueryApi } from "../lib/api";
 import { useMemoryChunks } from "./hooks/useHiveMind";
 import { useMissions } from "./store";
+import { WalletGate } from "./components/WalletGate";
 import { Skeleton } from "./components/ui/skeleton";
 
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
@@ -240,7 +241,7 @@ export default function MemoryExplorer() {
   const [hover, setHover] = useState<string | null>(null);
   const [tps, setTps] = useState(184);
   const { chunks, loading: chunksLoading } = useMemoryChunks();
-  const { missions } = useMissions();
+  const { missions, walletConnected } = useMissions();
 
   const historicalMissions = useMemo(() => {
     if (apiConfigured() && missions.length > 0) {
@@ -332,7 +333,7 @@ export default function MemoryExplorer() {
       <div className="flex min-w-0 flex-1 flex-col">
         <TopNav />
 
-        <div className="relative min-h-0 flex-1 overflow-y-auto">
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
           <div
             className="pointer-events-none absolute inset-0 opacity-50"
             style={{
@@ -341,7 +342,7 @@ export default function MemoryExplorer() {
             }}
           />
           <Particles count={26} />
-
+          <WalletGate connected={walletConnected}>
           <div className="relative px-6 py-6">
             <PageHeader
               title="AI Memory Explorer"
@@ -636,6 +637,7 @@ export default function MemoryExplorer() {
               </div>
             </Card>
           </div>
+          </WalletGate>
         </div>
       </div>
     </div>

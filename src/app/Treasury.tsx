@@ -10,6 +10,7 @@ import { TopNav } from "./components/dashboard/topnav";
 import { PageHeader } from "./components/dashboard/page-header";
 import { Particles } from "./components/particles";
 import { Skeleton } from "./components/ui/skeleton";
+import { WalletGate } from "./components/WalletGate";
 import { apiConfigured } from "../lib/api";
 import { usePayments } from "./hooks/useHiveMind";
 import { useMissions } from "./store";
@@ -84,7 +85,7 @@ const statusTone: Record<string, { c: string; bg: string; label: string }> = {
 export default function Treasury() {
   const [range, setRange] = useState<"24h" | "7d" | "30d">("7d");
   const { payments, loading: paymentsLoading } = usePayments();
-  const { missions } = useMissions();
+  const { missions, walletConnected } = useMissions();
   const loading = paymentsLoading;
 
   const escrows = useMemo(() => {
@@ -181,7 +182,7 @@ export default function Treasury() {
       <div className="flex min-w-0 flex-1 flex-col">
         <TopNav />
 
-        <div className="relative min-h-0 flex-1 overflow-y-auto">
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
           <div
             className="pointer-events-none absolute inset-0 opacity-50"
             style={{
@@ -190,7 +191,7 @@ export default function Treasury() {
             }}
           />
           <Particles count={24} />
-
+          <WalletGate connected={walletConnected}>
           <div className="relative px-6 py-6">
             <PageHeader
               title="Treasury Dashboard"
@@ -833,6 +834,7 @@ export default function Treasury() {
               </Card>
             </div>
           </div>
+          </WalletGate>
         </div>
       </div>
     </div>

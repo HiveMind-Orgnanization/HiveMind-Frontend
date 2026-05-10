@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { Link } from "react-router";
+import { useWallet } from "@solana/wallet-adapter-react";
 import { motion } from "motion/react";
 import {
   Search, Sparkles, Bot, Star, Zap, Activity, Wallet, Clock, ArrowRight,
@@ -10,6 +11,7 @@ import { TopNav } from "./components/dashboard/topnav";
 import { PageHeader } from "./components/dashboard/page-header";
 import { Particles } from "./components/particles";
 import { Skeleton } from "./components/ui/skeleton";
+import { WalletGate } from "./components/WalletGate";
 import { apiConfigured, fetchAgentsApi, type AgentProfile } from "../lib/api";
 
 type Agent = {
@@ -361,6 +363,7 @@ function AgentCardSkeleton() {
 }
 
 export default function Marketplace() {
+  const { connected } = useWallet();
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("All");
   const [sort, setSort] = useState("Recommended");
@@ -423,7 +426,7 @@ export default function Marketplace() {
       <div className="flex min-w-0 flex-1 flex-col">
         <TopNav />
 
-        <div className="relative min-h-0 flex-1 overflow-y-auto">
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
           <div
             className="pointer-events-none absolute inset-0 opacity-50"
             style={{
@@ -433,6 +436,7 @@ export default function Marketplace() {
           />
           <Particles count={26} />
 
+          <WalletGate connected={connected}>
           <div className="relative flex">
             <main className="min-w-0 flex-1 px-6 py-6">
               <PageHeader
@@ -757,6 +761,7 @@ export default function Marketplace() {
               </div>
             </aside>
           </div>
+          </WalletGate>
         </div>
       </div>
     </div>

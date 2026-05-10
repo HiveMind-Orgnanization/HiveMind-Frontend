@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { useWallet } from "@solana/wallet-adapter-react";
 import { toast } from "sonner";
 import { apiConfigured, createMissionApi, deleteMissionApi, fetchMissionsApi } from "../lib/api";
 import type { CreateMissionPayload } from "../lib/api";
@@ -95,9 +96,22 @@ function mergeRemoteWithLocal(remote: Mission[], local: Mission[]): Mission[] {
 }
 
 export function useMissions() {
-  const [missions, setMissions] = useState<Mission[]>(() => read());
+  const { connected, publicKey } = useWallet();
+  const walletPk = publicKey?.toBase58() ?? null;
+
+  const [missions, setMissions] = useState<Mission[]>(() => connected ? read() : []);
+
+  // Clear missions immediately when wallet disconnects; reload when it connects
+  useEffect(() => {
+    if (!connected) {
+      setMissions([]);
+    } else {
+      setMissions(read());
+    }
+  }, [connected, walletPk]);
 
   useEffect(() => {
+    if (!connected) return;
     const sync = () => setMissions(read());
     window.addEventListener("hm-missions-updated", sync);
     window.addEventListener("storage", sync);
@@ -105,9 +119,10 @@ export function useMissions() {
       window.removeEventListener("hm-missions-updated", sync);
       window.removeEventListener("storage", sync);
     };
-  }, []);
+  }, [connected]);
 
   useEffect(() => {
+    if (!connected) return;
     let cancelled = false;
     const pull = async () => {
       const remote = await fetchMissionsApi();
@@ -123,7 +138,7 @@ export function useMissions() {
       cancelled = true;
       window.removeEventListener("hm-session-changed", onSession);
     };
-  }, []);
+  }, [connected]);
 
   const create = useCallback(
     async (m: CreateMissionPayload) => {
@@ -183,7 +198,7 @@ export function useMissions() {
     write(list);
   }, []);
 
-  return { missions, create, remove, reset, clear, patchLocal };
+  return { missions, create, remove, reset, clear, patchLocal, walletConnected: connected };
 }
 
 export const ALL_AGENTS = [

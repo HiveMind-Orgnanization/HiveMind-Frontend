@@ -9,6 +9,7 @@ import { TopNav } from "./components/dashboard/topnav";
 import { PageHeader } from "./components/dashboard/page-header";
 import { Particles } from "./components/particles";
 import { Skeleton } from "./components/ui/skeleton";
+import { WalletGate } from "./components/WalletGate";
 import { apiConfigured } from "../lib/api";
 import { useReputationLeaderboard } from "./hooks/useHiveMind";
 import { useMissions } from "./store";
@@ -160,7 +161,7 @@ function ScoreBar({ value, c }: { value: number; c: string }) {
 export default function Reputation() {
   const [tab, setTab] = useState<"all" | "elite" | "verified" | "rising">("all");
   const { leaderboard: apiLeaderboard, loading } = useReputationLeaderboard();
-  const { missions } = useMissions();
+  const { missions, walletConnected } = useMissions();
 
   const missionLog = useMemo(() => {
     if (apiConfigured() && missions.length > 0) {
@@ -232,7 +233,7 @@ export default function Reputation() {
       <div className="flex min-w-0 flex-1 flex-col">
         <TopNav />
 
-        <div className="relative min-h-0 flex-1 overflow-y-auto">
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
           <div
             className="pointer-events-none absolute inset-0 opacity-50"
             style={{
@@ -241,7 +242,7 @@ export default function Reputation() {
             }}
           />
           <Particles count={28} />
-
+          <WalletGate connected={walletConnected}>
           <div className="relative px-6 py-6">
             <PageHeader
               title="Reputation Dashboard"
@@ -750,6 +751,7 @@ export default function Reputation() {
               </div>
             </Card>
           </div>
+          </WalletGate>
         </div>
       </div>
     </div>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Link, useNavigate } from "react-router";
+import { WalletGate } from "./components/WalletGate";
 import {
   Bot, Brain, GitBranch, Terminal, Zap, Cpu, Activity, Send,
   Pause, Play, MessageSquare, Database, ArrowRight,
@@ -2201,7 +2202,7 @@ function AgentWorkspaceMissionBody({
 }
 
 export default function AgentWorkspace() {
-  const { missions, patchLocal } = useMissions();
+  const { missions, patchLocal, walletConnected } = useMissions();
   const hasMission = missions.length > 0;
 
   // Reactive: re-read whenever MissionSwitcher changes the active mission
@@ -2230,34 +2231,38 @@ export default function AgentWorkspace() {
         <Sidebar />
         <div className="flex min-w-0 flex-1 flex-col">
           <TopNav />
-          <div className="relative flex flex-1 items-center justify-center overflow-y-auto px-6 py-10">
+          <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
             <Particles count={26} />
-            <div className="relative max-w-md text-center">
-              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl border border-cyan-300/30 bg-cyan-300/10">
-                <Bot className="h-7 w-7 text-cyan-300" />
+            <WalletGate connected={walletConnected}>
+              <div className="relative flex flex-1 items-center justify-center px-6 py-10">
+                <div className="relative max-w-md text-center">
+                  <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl border border-cyan-300/30 bg-cyan-300/10">
+                    <Bot className="h-7 w-7 text-cyan-300" />
+                  </div>
+                  <h2 className="mt-5 text-2xl tracking-tight">No active workforce yet</h2>
+                  <p className="mt-2 text-sm text-white/55">
+                    Create your first mission to spin up an autonomous agent crew. The workspace will come alive with realtime coordination,
+                    reasoning, and execution.
+                  </p>
+                  <div className="mt-6 flex justify-center gap-2">
+                    <Link
+                      to="/missions/new"
+                      className="group relative inline-flex items-center gap-2 overflow-hidden rounded-full px-5 py-2.5 text-sm text-black"
+                    >
+                      <span className="absolute inset-0 bg-gradient-to-r from-cyan-300 to-purple-300" />
+                      <Plus className="relative h-4 w-4" />
+                      <span className="relative">Create Mission</span>
+                    </Link>
+                    <Link
+                      to="/dashboard"
+                      className="rounded-full border border-white/10 bg-white/[0.03] px-5 py-2.5 text-sm text-white/80 hover:border-cyan-300/30"
+                    >
+                      Back to Dashboard
+                    </Link>
+                  </div>
+                </div>
               </div>
-              <h2 className="mt-5 text-2xl tracking-tight">No active workforce yet</h2>
-              <p className="mt-2 text-sm text-white/55">
-                Create your first mission to spin up an autonomous agent crew. The workspace will come alive with realtime coordination,
-                reasoning, and execution.
-              </p>
-              <div className="mt-6 flex justify-center gap-2">
-                <Link
-                  to="/missions/new"
-                  className="group relative inline-flex items-center gap-2 overflow-hidden rounded-full px-5 py-2.5 text-sm text-black"
-                >
-                  <span className="absolute inset-0 bg-gradient-to-r from-cyan-300 to-purple-300" />
-                  <Plus className="relative h-4 w-4" />
-                  <span className="relative">Create Mission</span>
-                </Link>
-                <Link
-                  to="/dashboard"
-                  className="rounded-full border border-white/10 bg-white/[0.03] px-5 py-2.5 text-sm text-white/80 hover:border-cyan-300/30"
-                >
-                  Back to Dashboard
-                </Link>
-              </div>
-            </div>
+            </WalletGate>
           </div>
         </div>
       </div>

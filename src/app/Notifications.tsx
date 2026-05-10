@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useWallet } from "@solana/wallet-adapter-react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Bell, CheckCircle2, AlertTriangle, XCircle, Info, Vote, Wallet, GitBranch,
@@ -8,6 +9,7 @@ import { Sidebar } from "./components/dashboard/sidebar";
 import { TopNav } from "./components/dashboard/topnav";
 import { PageHeader } from "./components/dashboard/page-header";
 import { Particles } from "./components/particles";
+import { WalletGate } from "./components/WalletGate";
 import { useNotifications, type NotifSeverity, type NotifChannel } from "./contexts/NotificationsContext";
 
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
@@ -45,6 +47,7 @@ const channelLabel: Record<NotifChannel, string> = {
 };
 
 export default function Notifications() {
+  const { connected } = useWallet();
   const { items, unread, markAll, dismiss, toggle } = useNotifications();
   const [channel, setChannel] = useState<Channel>("all");
   const [hideRead, setHideRead] = useState(false);
@@ -73,7 +76,7 @@ export default function Notifications() {
       <div className="flex min-w-0 flex-1 flex-col">
         <TopNav />
 
-        <div className="relative min-h-0 flex-1 overflow-y-auto">
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
           <div
             className="pointer-events-none absolute inset-0 opacity-50"
             style={{
@@ -83,6 +86,7 @@ export default function Notifications() {
           />
           <Particles count={20} />
 
+          <WalletGate connected={connected}>
           <div className="relative px-6 py-6">
             <PageHeader
               title="Notification Center"
@@ -308,6 +312,7 @@ export default function Notifications() {
               </div>
             </Card>
           </div>
+          </WalletGate>
         </div>
       </div>
     </div>
