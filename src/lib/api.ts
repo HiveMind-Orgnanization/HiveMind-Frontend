@@ -14,9 +14,8 @@ export function apiBase(): string {
 /** Whether the SPA should call the backend (missions, auth, health). */
 export function apiConfigured(): boolean {
   if (import.meta.env.VITE_API_DISABLED === "true") return false;
-  if (import.meta.env.PROD) {
-    return apiBase().length > 0;
-  }
+  // In prod: Vercel rewrites /api/* → EB backend (server-side, no mixed-content).
+  // In dev: Vite proxy in vite.config.ts routes /api/* → BACKEND_PROXY_TARGET.
   return true;
 }
 

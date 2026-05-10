@@ -3,7 +3,10 @@
   "buildCommand": "vite build",
   "outputDirectory": "dist",
   "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
+    { "source": "/api/:path*", "destination": "http://hivemind-backend-prod.eba-2pwjk2c2.ap-south-1.elasticbeanstalk.com/api/:path*" },
+    { "source": "/health",     "destination": "http://hivemind-backend-prod.eba-2pwjk2c2.ap-south-1.elasticbeanstalk.com/health" },
+    { "source": "/preview/:path*", "destination": "http://hivemind-backend-prod.eba-2pwjk2c2.ap-south-1.elasticbeanstalk.com/preview/:path*" },
+    { "source": "/(.*)",       "destination": "/index.html" }
   ],
   "headers": [
     {
