@@ -1779,23 +1779,16 @@ function AgentWorkspaceMissionBody({
     [mission.id],
   );
 
-  // Honour `?autoHost=1` from the expired-preview page once per session. The expired-preview
-  // HTML on the backend links here with that query when the user wants to rebuild a dead
-  // session — clicking the link should be enough; no further clicks required. Strip the
-  // param afterwards so a page reload doesn't keep re-firing the build.
-  const autoHostFiredRef = useRef(false);
+  // Hosted preview ("Host") is disabled for the hackathon — skip the autoHost auto-trigger
+  // (used to fire from /agents?autoHost=1 expired-preview links). Just strip the param so the
+  // URL is clean.
   useEffect(() => {
-    if (autoHostFiredRef.current) return;
     const params = new URLSearchParams(window.location.search);
-    if (params.get("autoHost") !== "1") return;
-    if (!getAuthToken()) return; // wait for wallet sign-in
-    autoHostFiredRef.current = true;
-    // Remove ?autoHost so reloads don't loop.
+    if (!params.has("autoHost")) return;
     params.delete("autoHost");
     const next = `${window.location.pathname}${params.toString() ? "?" + params.toString() : ""}`;
     window.history.replaceState(null, "", next);
-    void loadHostedPreview();
-  }, [mission.id, loadHostedPreview]);
+  }, [mission.id]);
 
   const toggleArtifactFolder = useCallback((fullPath: string) => {
     setCollapsedArtifactFolders((prev) => {
@@ -2643,11 +2636,8 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
         });
       }
 
-      if (data.verification?.ok && a && a.length > 0) {
-        void loadHostedPreview({ quiet: true }).then((ok) => {
-          if (ok) toast.success("Hosted preview ready — check the Preview tab");
-        });
-      }
+      // Hosted preview is disabled for the hackathon — Sandpack live preview already shows
+      // the result in the Preview tab.
 
       const ts2 = new Date().toLocaleTimeString("en-US", { hour12: false });
       const finalText =
@@ -3213,24 +3203,20 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                         <LayoutPanelLeft className="h-3.5 w-3.5 text-cyan-300" aria-hidden />
                         Activity
                       </button>
-                      {/* Live preview is instant via Sandpack; "Host" button deploys to EB for a shareable URL */}
+                      {/* Host (hosted Vite preview) — temporarily disabled until the build
+                          pipeline stabilises post-hackathon. Sandpack live preview still works. */}
                       <button
                         type="button"
-                        disabled={uniqueArtifactPaths === 0 || previewStarting || !getAuthToken()}
-                        title={
-                          !getAuthToken()
-                            ? "Sign in with your wallet to deploy"
-                            : "Deploy to hosted server for a shareable URL"
-                        }
-                        onClick={() => void loadHostedPreview()}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[11px] font-medium text-white/85 transition hover:border-cyan-300/35 disabled:cursor-not-allowed disabled:opacity-40"
+                        disabled
+                        title="Coming soon"
+                        aria-label="Host — coming soon"
+                        className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[11px] font-medium text-white/55 opacity-60"
                       >
-                        {previewStarting ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-300" aria-hidden />
-                        ) : (
-                          <ExternalLink className="h-3.5 w-3.5 text-cyan-300" aria-hidden />
-                        )}
+                        <ExternalLink className="h-3.5 w-3.5 text-white/45" aria-hidden />
                         Host
+                        <span className="ml-1 rounded-full border border-white/15 bg-white/[0.06] px-1.5 py-px text-[9px] uppercase tracking-wider text-white/55">
+                          Soon
+                        </span>
                       </button>
                       {previewEmbedUrl && (
                         <button
