@@ -1487,6 +1487,28 @@ function SandpackLivePreview({
       return /\.(tsx|jsx|ts|js)$/.test(p) && !p.endsWith("vite-env.d.ts");
     });
   }, [artifacts]);
+  // Stronger signal: an app is *bundleable* once Development has produced both an entry
+  // (App.tsx / main.tsx) AND a package.json. After this, Marketing/Treasury/Coordination
+  // can still be narrating, but their output is markdown — it doesn't touch the build.
+  // Releasing the overlay here means the preview iframe wakes up the moment the code is
+  // ready, instead of waiting for the entire swarm (including non-code agents) to settle.
+  const hasBundleableApp = useMemo(() => {
+    const deduped = dedupeArtifactsByPath(artifacts);
+    const paths = deduped.map((a) => a.path.toLowerCase());
+    const hasPkg = paths.some((p) => p === "frontend/package.json" || p.endsWith("/package.json"));
+    const hasEntry = paths.some(
+      (p) =>
+        p === "frontend/src/main.tsx" ||
+        p === "frontend/src/main.jsx" ||
+        p === "frontend/src/app.tsx" ||
+        p === "frontend/src/app.jsx" ||
+        p.endsWith("/src/main.tsx") ||
+        p.endsWith("/src/main.jsx") ||
+        p.endsWith("/src/app.tsx") ||
+        p.endsWith("/src/app.jsx"),
+    );
+    return hasPkg && hasEntry;
+  }, [artifacts]);
 
   // Capture errors here too so we can render a friendly overlay (raw error text is hidden from users).
   const [hasFatalError, setHasFatalError] = useState(false);
@@ -1537,12 +1559,12 @@ function SandpackLivePreview({
     };
   }, []);
 
-  // "Generating" overlay: shown the entire time the swarm is running, AND when the swarm
-  // hasn't started yet. Previously we exited this state as soon as Development saved its
-  // first .tsx file — but the swarm keeps running (Marketing/Treasury/Coordination + repair
-  // rounds), and Sandpack would try to bundle the half-finished tree, producing a white
-  // blank iframe. Now we wait for the swarm to fully settle before bundling.
-  const showGenerating = swarmRunning || (!hasGeneratedAppCode && !hasFiles);
+  // "Generating" overlay: shown until Development has produced a bundleable app
+  // (package.json + entry). After that, Marketing/Treasury/Coordination can still be
+  // narrating in the chat, but their output is markdown — it doesn't touch the build,
+  // so we let Sandpack wake up immediately. Falls back to the old "no files yet" check
+  // when nothing has been written at all, so the overlay still shows on a cold start.
+  const showGenerating = !hasBundleableApp && (swarmRunning || (!hasGeneratedAppCode && !hasFiles));
   if (showGenerating) {
     return (
       <div
