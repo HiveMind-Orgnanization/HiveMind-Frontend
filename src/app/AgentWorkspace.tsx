@@ -1002,6 +1002,7 @@ function sandpackCss(css: string): string {
 function buildSandpackFiles(artifacts: MissionArtifact[]): {
   files: Record<string, { code: string }>;
   dependencies: Record<string, string>;
+  entry: string;
 } {
   const deduped = dedupeArtifactsByPath(artifacts);
   const hasFe = deduped.some((a) => a.path.startsWith("frontend/"));
@@ -1025,6 +1026,9 @@ function buildSandpackFiles(artifacts: MissionArtifact[]): {
       continue;
     }
 
+    // Sandpack manages its own HTML shell — skip the project's index.html
+    if (rel === "index.html" || rel === "public/index.html") continue;
+
     const sp = rel.startsWith("/") ? rel : `/${rel}`;
     let code = art.content;
     if (sp.endsWith(".css")) code = sandpackCss(code);
@@ -1032,17 +1036,23 @@ function buildSandpackFiles(artifacts: MissionArtifact[]): {
     files[sp] = { code };
   }
 
-  // Ensure a valid React entry point exists
-  if (!files["/src/main.tsx"] && !files["/src/index.tsx"] && !files["/src/main.ts"]) {
-    const appPath = files["/src/App.tsx"] ? "./App" : (Object.keys(files).find((f) => f.match(/\/src\/\w+\.tsx$/)) ?? "").replace("/src/", "./").replace(".tsx", "");
-    if (appPath) {
+  // Ensure a valid React entry point exists under /src/
+  const ENTRY_CANDIDATES = ["/src/main.tsx", "/src/main.ts", "/src/index.tsx", "/src/index.ts"];
+  if (!ENTRY_CANDIDATES.some((c) => files[c])) {
+    const appKey = ["/src/App.tsx", "/src/app.tsx", "/src/App.ts"].find((k) => files[k]);
+    const appImport = appKey ? appKey.replace("/src/", "./").replace(/\.tsx?$/, "") : null;
+    const cssImport = files["/src/index.css"] ? '\nimport "./index.css";' : "";
+    if (appImport) {
       files["/src/main.tsx"] = {
-        code: `import React from "react";\nimport ReactDOM from "react-dom/client";\nimport App from "${appPath}";\nimport "./index.css";\nReactDOM.createRoot(document.getElementById("root")!).render(<React.StrictMode><App /></React.StrictMode>);`,
+        code: `import React from "react";\nimport ReactDOM from "react-dom/client";${cssImport}\nimport App from "${appImport}";\nReactDOM.createRoot(document.getElementById("root")!).render(<React.StrictMode><App /></React.StrictMode>);`,
       };
     }
   }
 
-  return { files, dependencies };
+  // Detect the entry point: prefer src/main.tsx hierarchy, fallback to template default
+  const entry = ENTRY_CANDIDATES.find((c) => files[c]) ?? "/index.tsx";
+
+  return { files, dependencies, entry };
 }
 
 function SandpackErrorMonitor({ onErrors }: { onErrors: (errs: string[]) => void }) {
@@ -1078,7 +1088,7 @@ function SandpackLivePreview({
   autoFixing: boolean;
   onErrors: (errs: string[]) => void;
 }) {
-  const { files, dependencies } = useMemo(() => buildSandpackFiles(artifacts), [artifacts]);
+  const { files, dependencies, entry } = useMemo(() => buildSandpackFiles(artifacts), [artifacts]);
   const hasFiles = Object.keys(files).length > 0;
 
   // Stable key — changes only when artifact set grows/changes, forcing re-bundle
@@ -1113,7 +1123,7 @@ function SandpackLivePreview({
           key={sandpackKey}
           template="react-ts"
           files={files}
-          customSetup={{ dependencies }}
+          customSetup={{ dependencies, entry }}
           options={{ externalResources: ["https://cdn.tailwindcss.com"] }}
           theme="dark"
         >
