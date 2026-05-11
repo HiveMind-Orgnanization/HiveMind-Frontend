@@ -44,7 +44,14 @@ export type Mission = {
   eta: string;
   confidence: number;
   config?: MissionConfig;
+  /** Count of follow-up chat messages the user has sent AFTER the mission completed.
+   *  First FOLLOWUP_FREE_QUOTA are free; each one after that requires a paid top-up
+   *  (FOLLOWUP_PAID_SOL per message) since the original escrow has already settled. */
+  followUpCount?: number;
 };
+
+export const FOLLOWUP_FREE_QUOTA = 5;
+export const FOLLOWUP_PAID_SOL = 0.05;
 
 /** Per-wallet localStorage key — missions from different wallets must not co-mingle.
  *  Use a placeholder when no wallet is connected so we never write into a "global" bucket. */

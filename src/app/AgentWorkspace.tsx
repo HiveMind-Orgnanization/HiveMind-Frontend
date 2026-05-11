@@ -14,7 +14,14 @@ import { Sidebar } from "./components/dashboard/sidebar";
 import { TopNav } from "./components/dashboard/topnav";
 import { PageHeader } from "./components/dashboard/page-header";
 import { Particles } from "./components/particles";
-import { useMissions, ALL_AGENTS, type Mission } from "./store";
+import { useConnection, useWallet } from "@solana/wallet-adapter-react";
+import { PublicKey, SystemProgram, Transaction, LAMPORTS_PER_SOL } from "@solana/web3.js";
+import { useMissions, ALL_AGENTS, FOLLOWUP_FREE_QUOTA, FOLLOWUP_PAID_SOL, type Mission } from "./store";
+
+/** Where each paid follow-up message lands on-chain. Same recipient as the Treasury page. */
+const FOLLOWUP_RECIPIENT_PUBKEY =
+  import.meta.env.VITE_HM_TREASURY_PUBKEY?.trim() ||
+  "G4o8wSS85JzcpDqTN9RWKaUvFF2a3bT3x2yewyk4xWPc";
 import { toast } from "sonner";
 import {
   apiConfigured,
@@ -1639,6 +1646,18 @@ function AgentWorkspaceMissionBody({
   const feedRef = useRef<HTMLDivElement>(null);
   // Prevent double-send (Enter key + button click firing together)
   const isSendingRef = useRef(false);
+
+  // Follow-up paywall — after a mission settles, the original escrow has been spent. Give
+  // the user FOLLOWUP_FREE_QUOTA free chat turns for small tweaks, then require a small
+  // SOL top-up per additional message so further agent work is paid for.
+  const { connection: solConnection } = useConnection();
+  const { publicKey: walletPubkey, sendTransaction: walletSendTx, connected: walletConnectedFlag } = useWallet();
+  const [paywallOpen, setPaywallOpen] = useState(false);
+  const [paywallPaying, setPaywallPaying] = useState(false);
+  const followUpCount = mission.followUpCount ?? 0;
+  const missionCompleted = mission.status === "completed";
+  const freeFollowupsRemaining = Math.max(0, FOLLOWUP_FREE_QUOTA - followUpCount);
+  const followUpRequiresPayment = missionCompleted && freeFollowupsRemaining === 0;
   // Track which mission IDs we've already auto-invoked so we don't repeat.
   const autoInvokedRef = useRef<Set<string>>(new Set());
   // Stable ID of the in-progress HiveMind swarm bubble so onProgress can update it.
@@ -2765,8 +2784,70 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
     if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
   }, [messages.length]);
 
+  // Submit the on-chain top-up that buys one additional follow-up message. We DON'T
+  // increment followUpCount on success — the user's send will do that once they click
+  // Send again. We just unlock the gate by decrementing the count below the quota,
+  // effectively granting one extra free credit for the message they're about to send.
+  const submitFollowupPayment = async () => {
+    if (paywallPaying) return;
+    if (!walletConnectedFlag || !walletPubkey || !walletSendTx) {
+      toast.error("Connect your wallet to continue.");
+      return;
+    }
+    setPaywallPaying(true);
+    try {
+      const recipient = new PublicKey(FOLLOWUP_RECIPIENT_PUBKEY);
+      const lamports = Math.round(FOLLOWUP_PAID_SOL * LAMPORTS_PER_SOL);
+      const { blockhash, lastValidBlockHeight } = await solConnection.getLatestBlockhash();
+      const tx = new Transaction({
+        feePayer: walletPubkey,
+        recentBlockhash: blockhash,
+      }).add(
+        SystemProgram.transfer({
+          fromPubkey: walletPubkey,
+          toPubkey: recipient,
+          lamports,
+        }),
+      );
+      const sig = await walletSendTx(tx, solConnection);
+      toast("Payment signed", { description: `Confirming ${FOLLOWUP_PAID_SOL} SOL on devnet…` });
+      await solConnection.confirmTransaction(
+        { signature: sig, blockhash, lastValidBlockHeight },
+        "confirmed",
+      );
+      // Refund one credit so the user can send THIS message; subsequent ones will gate
+      // again. (We re-charge per-message rather than buying a credit pack.)
+      patchLocal(mission.id, { followUpCount: Math.max(0, followUpCount - 1) });
+      toast.success("Payment confirmed", {
+        description: `${FOLLOWUP_PAID_SOL} SOL · ${sig.slice(0, 6)}…${sig.slice(-4)}`,
+      });
+      setPaywallOpen(false);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("User rejected") || msg.includes("rejected")) {
+        toast.message("Payment cancelled");
+      } else {
+        toast.error("Payment failed", { description: msg.slice(0, 140) });
+      }
+    } finally {
+      setPaywallPaying(false);
+    }
+  };
+
   const sendMessage = () => {
     if (!draft.trim() || isSendingRef.current) return;
+    // If the mission already settled and the free follow-up quota is exhausted, pop the
+    // paywall first — the actual send happens after the on-chain top-up confirms.
+    if (followUpRequiresPayment) {
+      setPaywallOpen(true);
+      return;
+    }
+    // Each follow-up turn while the mission is in the "completed" state burns one free
+    // credit. We increment up front so the counter is correct even if the user reloads
+    // before the swarm finishes responding.
+    if (missionCompleted) {
+      patchLocal(mission.id, { followUpCount: followUpCount + 1 });
+    }
     isSendingRef.current = true;
     previewAutoFixAttemptsRef.current = 0; // new message → fresh auto-fix budget
     const text = draft.trim();
@@ -3163,17 +3244,56 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
 
                   {/* Composer */}
                   <div className="border-t border-white/5 p-3">
+                    {/* Follow-up paywall banner — only renders after the mission has settled,
+                        so it doesn't clutter the workspace during the initial run. */}
+                    {missionCompleted && (
+                      <div
+                        className={`mb-2 flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-[11px] ${
+                          followUpRequiresPayment
+                            ? "border-amber-300/30 bg-amber-300/5 text-amber-200"
+                            : "border-white/10 bg-white/[0.03] text-white/55"
+                        }`}
+                      >
+                        <span>
+                          {followUpRequiresPayment ? (
+                            <>
+                              Free follow-ups used. Each additional message costs{" "}
+                              <span className="text-amber-100">{FOLLOWUP_PAID_SOL} SOL</span> on devnet.
+                            </>
+                          ) : (
+                            <>
+                              <span className="text-white/85 tabular-nums">{freeFollowupsRemaining}</span>{" "}
+                              of {FOLLOWUP_FREE_QUOTA} free follow-up message
+                              {freeFollowupsRemaining === 1 ? "" : "s"} remaining.
+                            </>
+                          )}
+                        </span>
+                        {followUpRequiresPayment && (
+                          <button
+                            onClick={() => setPaywallOpen(true)}
+                            className="rounded-md border border-amber-300/30 bg-amber-300/10 px-2 py-1 text-[10px] text-amber-100 hover:bg-amber-300/20"
+                          >
+                            Top up
+                          </button>
+                        )}
+                      </div>
+                    )}
                     <div className="relative flex items-center gap-2">
                       <input
                         value={draft}
                         onChange={(e) => setDraft(e.target.value)}
                         onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendMessage()}
-                        placeholder="Ask the swarm a question…"
+                        placeholder={
+                          followUpRequiresPayment
+                            ? `Top up ${FOLLOWUP_PAID_SOL} SOL to continue chatting…`
+                            : "Ask the swarm a question…"
+                        }
                         className="w-full rounded-lg border border-white/10 bg-black/50 py-2 pl-3 pr-10 text-[13px] text-white/90 placeholder:text-white/25 focus:border-cyan-300/35 focus:outline-none"
                       />
                       <button
                         onClick={sendMessage}
                         disabled={!draft.trim()}
+                        title={followUpRequiresPayment ? `Send (requires ${FOLLOWUP_PAID_SOL} SOL)` : undefined}
                         className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md bg-gradient-to-r from-cyan-400 to-purple-400 p-1.5 text-black disabled:opacity-40"
                         aria-label="Send"
                       >
@@ -3649,6 +3769,110 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
           </div>
         </div>
       </div>
+
+      {/* Follow-up paywall modal — gates chat after the original escrow has settled and the
+          user has burned their free follow-up quota. One on-chain top-up unlocks one more
+          message; subsequent ones re-gate, so spend is always explicit. */}
+      <AnimatePresence>
+        {paywallOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+            onClick={() => { if (!paywallPaying) setPaywallOpen(false); }}
+          >
+            <motion.div
+              initial={{ scale: 0.96, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.96, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md rounded-2xl border border-white/10 bg-gradient-to-br from-[#0c1322] to-[#04060c] p-6 shadow-2xl"
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div
+                    className="flex h-9 w-9 items-center justify-center rounded-xl border border-amber-300/30"
+                    style={{ background: "linear-gradient(135deg, #f59e0b55, #f59e0b11)" }}
+                  >
+                    <Lock className="h-4 w-4 text-amber-200" />
+                  </div>
+                  <div>
+                    <div className="text-sm">Top up to keep chatting</div>
+                    <div className="text-[10px] text-white/40">
+                      Mission settled · {followUpCount} follow-ups sent
+                    </div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => { if (!paywallPaying) setPaywallOpen(false); }}
+                  className="text-white/40 hover:text-white"
+                  disabled={paywallPaying}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="mt-4 space-y-3 text-[12px] text-white/65">
+                <p>
+                  Your original mission escrow has been spent and the {FOLLOWUP_FREE_QUOTA} free
+                  follow-up turns are used. Each additional message tops up the swarm with{" "}
+                  <span className="text-amber-100">{FOLLOWUP_PAID_SOL} SOL</span> on devnet —
+                  exactly enough for one more round of agent work.
+                </p>
+
+                <div className="rounded-lg border border-white/5 bg-black/30 p-3 text-[11px]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-white/40">From</span>
+                    <span className="font-mono text-white/75">
+                      {walletPubkey
+                        ? `${walletPubkey.toBase58().slice(0, 6)}…${walletPubkey.toBase58().slice(-4)}`
+                        : "—"}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex items-center justify-between">
+                    <span className="text-white/40">To · HiveMind treasury</span>
+                    <span className="font-mono text-emerald-300/90">
+                      {FOLLOWUP_RECIPIENT_PUBKEY.slice(0, 6)}…{FOLLOWUP_RECIPIENT_PUBKEY.slice(-4)}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex items-center justify-between">
+                    <span className="text-white/40">Network</span>
+                    <span className="text-emerald-300/90">devnet</span>
+                  </div>
+                  <div className="mt-1 flex items-center justify-between">
+                    <span className="text-white/40">Amount</span>
+                    <span className="tabular-nums text-white/90">{FOLLOWUP_PAID_SOL} SOL</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-5 flex gap-2">
+                <button
+                  onClick={() => { if (!paywallPaying) setPaywallOpen(false); }}
+                  disabled={paywallPaying}
+                  className="flex-1 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white/80 hover:border-white/20 disabled:opacity-50"
+                >
+                  Not now
+                </button>
+                <button
+                  onClick={submitFollowupPayment}
+                  disabled={paywallPaying}
+                  className="group relative flex-1 overflow-hidden rounded-lg px-3 py-2 text-xs text-black disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <span className="absolute inset-0 bg-gradient-to-r from-amber-300 to-orange-300" />
+                  <span className="relative inline-flex items-center justify-center gap-1.5">
+                    {paywallPaying
+                      ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      : <Lock className="h-3.5 w-3.5" />}
+                    {paywallPaying ? "Confirming…" : `Pay ${FOLLOWUP_PAID_SOL} SOL & continue`}
+                  </span>
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
