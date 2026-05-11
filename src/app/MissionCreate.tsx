@@ -70,7 +70,8 @@ const OPENAI_MODELS = [
   { id: "o1",           label: "o1",            desc: "Deep reasoning",              solMult: 3.2, tier: "premium"   },
   { id: "o3",           label: "o3",            desc: "Best-in-class reasoning",     solMult: 4.0, tier: "premium"   },
   { id: "gpt-5.1",      label: "GPT-5.1",       desc: "Most powerful · best-in-class", solMult: 5.0, tier: "premium" },
-  { id: "gpt-5.5-long-context", label: "GPT-5.5 long context", desc: "Long context · unified routing", solMult: 5.5, tier: "premium" },
+  { id: "gpt-5.5",      label: "GPT-5.5",       desc: "Latest · best for codegen",     solMult: 5.5, tier: "premium" },
+  { id: "gpt-5.5-pro",  label: "GPT-5.5 pro",   desc: "Top tier · heavy artifacts",    solMult: 6.5, tier: "premium" },
 ] as const;
 
 type OpenAiModelId = (typeof OPENAI_MODELS)[number]["id"];
@@ -79,7 +80,9 @@ const TIER_COLOR: Record<string, string> = {
   light: "#22d3ee", standard: "#a855f7", reasoning: "#f59e0b", premium: "#ef4444",
 };
 
-const UNIFIED_AGENT_MODEL = "gpt-5.5-long-context" as OpenAiModelId;
+// Default model for every agent role — backend automatically promotes Development/Coordination
+// artifact-heavy + critical steps to gpt-5.5-pro via OPENAI_MODEL_HEAVY/CRIT env routing.
+const UNIFIED_AGENT_MODEL = "gpt-5.5" as OpenAiModelId;
 
 const PRIORITY_DEFAULT_AGENT_MODELS: Record<string, Record<string, OpenAiModelId>> = {
   low: Object.fromEntries([

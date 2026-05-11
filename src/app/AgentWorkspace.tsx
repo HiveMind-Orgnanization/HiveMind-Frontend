@@ -43,8 +43,9 @@ import { AgentMessageMarkdown } from "./components/agent-message-markdown";
 import { buildArtifactTree, dedupeArtifactsByPath, type ArtifactTreeNode } from "../lib/artifact-tree";
 import { SandpackProvider, SandpackPreview as SandpackFrame, useSandpack } from "@codesandbox/sandpack-react";
 
-// All agent invocations always use GPT-5 for best results.
-const AGENT_MODEL = "gpt-5.5-long-context";
+// All agent invocations default to gpt-5.5 (the backend routes Development/Coordination
+// artifact-heavy + critical steps to gpt-5.5-pro automatically via OPENAI_MODEL_HEAVY/CRIT).
+const AGENT_MODEL = "gpt-5.5";
 
 type ChatThought = {
   agent: string;
