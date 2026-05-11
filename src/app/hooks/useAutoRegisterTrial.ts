@@ -144,6 +144,10 @@ export function useAutoRegisterTrial() {
         } else {
           toast.dismiss("trial-register");
         }
+        // Tell every other component that displays trial status (TrialBanner / sidebar Free
+        // Credits pill / TrialPage) to re-fetch from the API. Without this, the Mission
+        // Telemetry card stays stuck on "Wallet not registered" even after we just registered.
+        window.dispatchEvent(new CustomEvent("hm-trial-status-changed", { detail: { wallet: walletStr } }));
       } catch (err: unknown) {
         toast.dismiss("trial-register");
         const msg = err instanceof Error ? err.message : String(err);

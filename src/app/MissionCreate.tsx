@@ -343,6 +343,8 @@ export default function MissionCreate() {
         // Notify backend to decrement count
         if (walletPk) await postTrialUse(walletPk).catch(() => null);
         setFreeCredits((c) => (c !== null ? Math.max(0, c - 1) : null));
+        // Notify sidebar + TrialBanner to re-fetch on-chain status (cap decrements live).
+        window.dispatchEvent(new CustomEvent("hm-trial-status-changed", { detail: { wallet: walletPk } }));
         toast.success("Free credit used", { description: `tx ${creditResult.signature.slice(0, 8)}…` });
       } else {
         // Charge the full budget amount — that IS what goes into the mission escrow

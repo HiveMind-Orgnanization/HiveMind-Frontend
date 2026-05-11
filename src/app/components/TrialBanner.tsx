@@ -73,9 +73,10 @@ export function TrialBanner() {
       const sig = await sendTransaction(tx, connection);
       await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
       await confirmTrialRegister(walletAddr);
-      // Refresh status
+      // Refresh status + broadcast so the sidebar's Free Credits pill updates too.
       const fresh = await fetchTrialStatus(walletAddr);
       setStatus(fresh);
+      window.dispatchEvent(new CustomEvent("hm-trial-status-changed", { detail: { wallet: walletAddr } }));
       toast.success("Free trial activated — 10 missions ready!");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -93,10 +94,23 @@ export function TrialBanner() {
 
   useEffect(() => {
     if (!walletAddr) { setStatus(null); return; }
-    setLoading(true);
-    fetchTrialStatus(walletAddr)
-      .then(setStatus)
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    const refresh = () => {
+      setLoading(true);
+      fetchTrialStatus(walletAddr)
+        .then((s) => { if (!cancelled) setStatus(s); })
+        .finally(() => { if (!cancelled) setLoading(false); });
+    };
+    refresh();
+    // Refetch whenever any component reports a trial change (auto-register completing,
+    // manual register, use_free_trial consumption, daily claim). Without this the
+    // "Wallet not registered" message stuck around even after auto-register succeeded.
+    const onChange = () => refresh();
+    window.addEventListener("hm-trial-status-changed", onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("hm-trial-status-changed", onChange);
+    };
   }, [walletAddr]);
 
   // Countdown timer

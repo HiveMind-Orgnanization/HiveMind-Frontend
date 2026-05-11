@@ -25,7 +25,10 @@ export function Sidebar() {
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem("hm-sidebar-collapsed") === "1"
   );
-  type CreditsState = { kind: "hidden" } | { kind: "activating" } | { kind: "ready"; uses: number };
+  type CreditsState =
+    | { kind: "hidden" }
+    | { kind: "activating" }
+    | { kind: "ready"; uses: number; total: number };
   const [credits, setCredits] = useState<CreditsState>({ kind: "hidden" });
   const { publicKey } = useWallet();
   const walletAddress = publicKey?.toBase58() ?? null;
@@ -39,6 +42,7 @@ export function Sidebar() {
   // with an empty effect-dep array, so connecting to a fresh wallet showed the OLD wallet's
   // remaining credits — usually 0 after the old one was used up). For unregistered wallets,
   // useAutoRegisterTrial is mid-flight: surface an "Activating…" state and poll briefly.
+  // Also listens for "hm-trial-status-changed" so manual register or trial-use re-fetches.
   useEffect(() => {
     if (!walletAddress) { setCredits({ kind: "hidden" }); return; }
     let cancelled = false;
@@ -49,7 +53,8 @@ export function Sidebar() {
       const s = await fetchTrialStatus(walletAddress);
       if (cancelled) return;
       if (s?.registered) {
-        setCredits({ kind: "ready", uses: s.usesRemaining });
+        // usesTotal comes from the on-chain account (10 by default per FreeTrialConfig).
+        setCredits({ kind: "ready", uses: s.usesRemaining, total: s.usesTotal ?? 10 });
         return;
       }
       // Not registered yet — auto-register may still be in flight. Show "Activating…" and
@@ -57,10 +62,13 @@ export function Sidebar() {
       setCredits({ kind: "activating" });
       if (attempts < 15) pollHandle = setTimeout(tick, 3000);
     };
-    void tick();
+    const refetch = () => { attempts = 0; void tick(); };
+    refetch();
+    window.addEventListener("hm-trial-status-changed", refetch);
     return () => {
       cancelled = true;
       if (pollHandle) clearTimeout(pollHandle);
+      window.removeEventListener("hm-trial-status-changed", refetch);
     };
   }, [walletAddress]);
 
@@ -212,7 +220,7 @@ export function Sidebar() {
                     Activating…
                   </span>
                 ) : (
-                  <span className="tabular-nums text-cyan-300">{credits.uses}/5 daily</span>
+                  <span className="tabular-nums text-cyan-300">{credits.uses}/{credits.total} free</span>
                 )}
               </Link>
             )}
