@@ -1057,7 +1057,7 @@ function buildSandpackFiles(artifacts: MissionArtifact[]): {
   for (const [filePath, { code }] of Object.entries(files)) {
     if (!filePath.match(/\.(tsx?|jsx?)$/)) continue;
     const dir = filePath.replace(/\/[^/]+$/, "") || "/";
-    for (const m of code.matchAll(/import\s+['"]([^'"]+\.css)['"]/g)) {
+    for (const m of code.matchAll(/import\s+(?:[\w*{},\s]+\s+from\s+)?['"]([^'"]+\.css)['"]/g)) {
       const imp = m[1]!;
       if (imp.startsWith("http") || !imp.match(/^\.\.?\//)) continue;
       const parts = `${dir}/${imp}`.split("/").filter(Boolean);
@@ -1148,22 +1148,33 @@ function SandpackLivePreview({
     return `${d.length}-${d[d.length - 1]?.createdAt ?? 0}`;
   }, [artifacts]);
 
-  // SandpackPreview ignores flex/percentage heights — measure the real container pixel
-  // height with ResizeObserver and pass it as an explicit px value.
+  // SandpackPreview ignores flex/percentage heights — measure the container and pass
+  // a real pixel height. Initialise from window so it's never a thin strip.
   const containerRef = useRef<HTMLDivElement>(null);
-  const [frameHeight, setFrameHeight] = useState(520);
+  const [frameHeight, setFrameHeight] = useState(() =>
+    typeof window !== "undefined" ? Math.max(400, window.innerHeight - 220) : 520
+  );
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(([entry]) => {
-      const h = entry?.contentRect.height;
-      if (h && h > 50) setFrameHeight(h);
-    });
+    const measure = () => {
+      const h = el.getBoundingClientRect().height;
+      if (h > 100) setFrameHeight(h);
+    };
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
-    // Set initial height immediately
-    const initial = el.getBoundingClientRect().height;
-    if (initial > 50) setFrameHeight(initial);
-    return () => ro.disconnect();
+    measure();
+    const raf1 = requestAnimationFrame(measure);
+    const raf2 = requestAnimationFrame(() => requestAnimationFrame(measure));
+    const t1 = setTimeout(measure, 150);
+    const t2 = setTimeout(measure, 600);
+    return () => {
+      ro.disconnect();
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
   }, []);
 
   if (!hasFiles) {
@@ -1187,7 +1198,7 @@ function SandpackLivePreview({
         </div>
       )}
       {/* This div is the height source — ResizeObserver reads its real pixel height */}
-      <div ref={containerRef} style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+      <div ref={containerRef} style={{ flex: 1, minHeight: 0 }}>
         <SandpackProvider
           key={sandpackKey}
           template="react-ts"
