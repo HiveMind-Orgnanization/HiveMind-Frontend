@@ -622,6 +622,12 @@ export type InvokeAgentApiResult =
     }
   | { ok: false; reason: "unauthorized" | "network" };
 
+/**
+ * Invoke an agent through the async (job-id + polling) pattern. The synchronous
+ * `/api/agents/:id/invoke` route runs gpt-5.5 inline — with large prompts that easily
+ * exceeds Vercel's 30 s rewrite timeout, surfacing as "network" failures. Async route
+ * returns 202 immediately and we poll, identical to swarm-run.
+ */
 export async function invokeAgentApi(
   agentId: string,
   body: {
@@ -637,29 +643,79 @@ export async function invokeAgentApi(
 ): Promise<InvokeAgentApiResult> {
   if (!apiConfigured()) return { ok: false, reason: "network" };
   try {
-    const invokePath = `/api/agents/${encodeURIComponent(agentId)}/invoke`;
-    const r = await fetchWithRetryForGateway(invokePath, {
+    // 1) Kick off the job. The async endpoint returns 202 immediately.
+    const startPath = `/api/agents/${encodeURIComponent(agentId)}/invoke-async`;
+    const start = await fetchWithRetryForGateway(startPath, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    }, { attempts: 5, baseDelayMs: 600 });
+    }, { attempts: 4, baseDelayMs: 500 });
+    if (start.status === 401) return { ok: false, reason: "unauthorized" };
+    if (!start.ok && start.status !== 202) {
+      // Fall back to the sync route if async isn't deployed yet (older backend).
+      if (start.status === 404) return invokeAgentSync(agentId, body);
+      return { ok: false, reason: "network" };
+    }
+    const startJson = (await start.json().catch(() => ({}))) as { jobId?: string };
+    const jobId = typeof startJson.jobId === "string" ? startJson.jobId : null;
+    if (!jobId) return invokeAgentSync(agentId, body);
+
+    // 2) Poll until done. Fast cadence first 12 s, then back off.
+    const statusPath = `/api/agents/${encodeURIComponent(agentId)}/invoke-status/${encodeURIComponent(jobId)}`;
+    const FAST_MS = 1500;
+    const SLOW_MS = 4000;
+    let elapsed = 0;
+    const BUDGET_MS = 5 * 60_000; // 5 minutes
+    for (let i = 0; elapsed < BUDGET_MS; i++) {
+      const wait = i < 8 ? FAST_MS : SLOW_MS;
+      await new Promise<void>((r) => setTimeout(r, wait));
+      elapsed += wait;
+      const poll = await fetchWithRetryForGateway(statusPath, undefined, { attempts: 4, baseDelayMs: 500 });
+      if (poll.status === 401) return { ok: false, reason: "unauthorized" };
+      if (!poll.ok) continue; // transient — keep polling
+      const s = (await poll.json()) as {
+        status: "running" | "done" | "failed";
+        result?: { reply?: string; provider?: string; model?: string; debugLlm?: string; artifactPathsApplied?: string[]; persistArtifactParseFailed?: boolean };
+        error?: string;
+      };
+      if (s.status === "running") continue;
+      if (s.status === "failed") return { ok: false, reason: "network" };
+      const j = s.result ?? {};
+      return {
+        ok: true,
+        reply: j.reply ?? "",
+        provider: j.provider ?? "mock",
+        model: j.model ?? "unknown",
+        debugLlm: j.debugLlm,
+        artifactPathsApplied: Array.isArray(j.artifactPathsApplied) ? j.artifactPathsApplied : undefined,
+        persistArtifactParseFailed: Boolean(j.persistArtifactParseFailed),
+      };
+    }
+    return { ok: false, reason: "network" };
+  } catch {
+    return { ok: false, reason: "network" };
+  }
+}
+
+/** Synchronous fallback path used only when the backend lacks the async endpoint (older deploy). */
+async function invokeAgentSync(
+  agentId: string,
+  body: { message: string; missionId?: string; includeArtifacts?: boolean; persistArtifactUpdates?: boolean; model?: string },
+): Promise<InvokeAgentApiResult> {
+  try {
+    const r = await fetchWithRetryForGateway(`/api/agents/${encodeURIComponent(agentId)}/invoke`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }, { attempts: 3, baseDelayMs: 600 });
     if (r.status === 401) return { ok: false, reason: "unauthorized" };
     if (!r.ok) return { ok: false, reason: "network" };
     const j = (await r.json()) as {
-      reply?: string;
-      provider?: string;
-      model?: string;
-      debugLlm?: string;
-      debugOpenAi?: string;
-      artifactPathsApplied?: string[];
-      persistArtifactParseFailed?: boolean;
+      reply?: string; provider?: string; model?: string;
+      debugLlm?: string; debugOpenAi?: string;
+      artifactPathsApplied?: string[]; persistArtifactParseFailed?: boolean;
     };
-    const debug =
-      typeof j.debugLlm === "string"
-        ? j.debugLlm
-        : typeof j.debugOpenAi === "string"
-          ? j.debugOpenAi
-          : undefined;
+    const debug = typeof j.debugLlm === "string" ? j.debugLlm : typeof j.debugOpenAi === "string" ? j.debugOpenAi : undefined;
     return {
       ok: true,
       reply: j.reply ?? "",
