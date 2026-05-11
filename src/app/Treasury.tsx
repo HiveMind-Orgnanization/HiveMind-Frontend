@@ -1,19 +1,33 @@
-import { useMemo, useState } from "react";
-import { motion } from "motion/react";
+import { useEffect, useMemo, useState } from "react";
+import { motion, AnimatePresence } from "motion/react";
 import {
   Wallet, ArrowUpRight, ArrowDownRight, TrendingUp, Lock, Unlock,
   Database, Activity, Zap, Shield, ExternalLink, Coins, GitBranch,
-  CheckCircle2, Clock, AlertTriangle, Network,
+  CheckCircle2, Clock, AlertTriangle, Network, X, Loader2,
 } from "lucide-react";
+import { useConnection, useWallet } from "@solana/wallet-adapter-react";
+import {
+  PublicKey,
+  SystemProgram,
+  Transaction,
+  LAMPORTS_PER_SOL,
+} from "@solana/web3.js";
+import { toast } from "sonner";
 import { Sidebar } from "./components/dashboard/sidebar";
 import { TopNav } from "./components/dashboard/topnav";
 import { PageHeader } from "./components/dashboard/page-header";
 import { Particles } from "./components/particles";
 import { Skeleton } from "./components/ui/skeleton";
 import { WalletGate } from "./components/WalletGate";
-import { apiConfigured } from "../lib/api";
+import { apiConfigured, createPaymentIntentApi } from "../lib/api";
 import { usePayments } from "./hooks/useHiveMind";
 import { useMissions } from "./store";
+
+/** Where the user's deposit lands on-chain. Defaults to the HiveMind funder pubkey on
+ *  devnet (also funds new wallets). Override with VITE_HM_TREASURY_PUBKEY in production. */
+const TREASURY_RECIPIENT_PUBKEY =
+  import.meta.env.VITE_HM_TREASURY_PUBKEY?.trim() ||
+  "G4o8wSS85JzcpDqTN9RWKaUvFF2a3bT3x2yewyk4xWPc";
 
 function shortPk(pk: string) {
   if (pk.length <= 12) return pk;
@@ -87,6 +101,91 @@ export default function Treasury() {
   const { payments, loading: paymentsLoading } = usePayments();
   const { missions, walletConnected } = useMissions();
   const loading = paymentsLoading;
+  const { connection } = useConnection();
+  const { publicKey, sendTransaction, connected } = useWallet();
+
+  // Poll the devnet RPC for the current slot every 5s — replaces the hardcoded SLOT pill.
+  const [liveSlot, setLiveSlot] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const slot = await connection.getSlot();
+        if (!cancelled) setLiveSlot(slot);
+      } catch {
+        /* swallow — banner will fall back to em-dash */
+      }
+    };
+    tick();
+    const id = window.setInterval(tick, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [connection]);
+
+  // Deposit modal state
+  const [depositOpen, setDepositOpen] = useState(false);
+  const [depositAmount, setDepositAmount] = useState("0.1");
+  const [depositing, setDepositing] = useState(false);
+
+  const submitDeposit = async () => {
+    if (depositing) return;
+    if (!connected || !publicKey || !sendTransaction) {
+      toast.error("Connect your wallet first");
+      return;
+    }
+    const amount = Number(depositAmount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      toast.error("Enter a positive SOL amount");
+      return;
+    }
+    if (amount > 10) {
+      toast.error("Devnet cap: 10 SOL per deposit");
+      return;
+    }
+    setDepositing(true);
+    try {
+      const recipient = new PublicKey(TREASURY_RECIPIENT_PUBKEY);
+      const lamports = Math.round(amount * LAMPORTS_PER_SOL);
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+      const tx = new Transaction({
+        feePayer: publicKey,
+        recentBlockhash: blockhash,
+      }).add(
+        SystemProgram.transfer({
+          fromPubkey: publicKey,
+          toPubkey: recipient,
+          lamports,
+        }),
+      );
+      const sig = await sendTransaction(tx, connection);
+      toast("Deposit signed", { description: `Confirming ${amount} SOL on devnet…` });
+      await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+      // Tag the deposit against the most-recent mission (or a synthetic "platform" id)
+      // so it shows up in the payment feed alongside other settlements.
+      const missionTag = missions[0]?.id ?? "platform-deposit";
+      await createPaymentIntentApi({
+        missionId: missionTag,
+        amountSol: amount,
+        recipientPubkey: TREASURY_RECIPIENT_PUBKEY,
+      });
+      toast.success("Deposit confirmed", {
+        description: `${amount} SOL · ${sig.slice(0, 8)}…${sig.slice(-6)}`,
+      });
+      setDepositOpen(false);
+      setDepositAmount("0.1");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("User rejected") || msg.includes("rejected")) {
+        toast.message("Deposit cancelled");
+      } else {
+        toast.error("Deposit failed", { description: msg.slice(0, 140) });
+      }
+    } finally {
+      setDepositing(false);
+    }
+  };
 
   const escrows = useMemo(() => {
     if (apiConfigured() && missions.length > 0) {
@@ -156,9 +255,35 @@ export default function Treasury() {
     return STATIC_WALLETS;
   }, [missions, payments]);
 
-  const total = wallets.reduce((s, w) => s + w.balance, 0);
-  const available = wallets.reduce((s, w) => s + w.available, 0);
-  const locked = total - available;
+  // TOTAL = total budget committed across all missions (Mission Reserve). Summing every
+  // wallet was double-counting because Active Escrow + Completed Vault are subsets of
+  // Mission Reserve, not separate pools.
+  const totalBudget = useMemo(
+    () => (apiConfigured() ? missions.reduce((s, m) => s + m.budget, 0) : wallets[0]?.balance ?? 0),
+    [missions, wallets],
+  );
+  const activeBudget = useMemo(
+    () => missions.filter((m) => m.status === "active").reduce((s, m) => s + m.budget, 0),
+    [missions],
+  );
+  const completedBudget = useMemo(
+    () => missions.filter((m) => m.status === "completed").reduce((s, m) => s + m.budget, 0),
+    [missions],
+  );
+  const queuedBudget = Math.max(0, totalBudget - activeBudget - completedBudget);
+  const total = apiConfigured() ? totalBudget : wallets.reduce((s, w) => s + w.balance, 0);
+  const available = apiConfigured() ? Math.max(0, totalBudget - activeBudget) : wallets.reduce((s, w) => s + w.available, 0);
+  // Partition of Mission Reserve, drawn on the composition bar — these DO sum to 100%
+  // because they are disjoint subsets of the same total (active + completed + queued = total).
+  const compositionParts = apiConfigured()
+    ? [
+        { name: "Active Escrow", value: activeBudget, c: "#f59e0b" },
+        { name: "Completed Vault", value: completedBudget, c: "#a855f7" },
+        { name: "Queued / Reserved", value: queuedBudget, c: "#22d3ee" },
+      ]
+    : wallets.map((w) => ({ name: w.name, value: w.balance, c: w.c }));
+  // Safe percent helper — avoids NaN when a bucket is empty (e.g. no payouts yet).
+  const pct = (num: number, denom: number) => (denom > 0 ? (num / denom) * 100 : 0);
 
   const realVolume24h = useMemo(() => {
     if (!apiConfigured() || payments.length === 0) return null;
@@ -175,6 +300,67 @@ export default function Treasury() {
     () => missions.filter((m) => m.status === "active").reduce((s, m) => s + m.cost, 0).toFixed(2),
     [missions],
   );
+
+  // Live cashflow series — bucket real payments across the selected window. Deposits TO
+  // the treasury recipient pubkey are INFLOW; everything else is OUTFLOW (agent payouts).
+  // When there's no payment history, falls back to a gently-rising synthetic curve so the
+  // chart never goes flat-zero on a fresh wallet.
+  const cashflow = useMemo(() => {
+    const rangeMs = range === "24h" ? 86_400_000 : range === "7d" ? 604_800_000 : 2_592_000_000;
+    const now = Date.now();
+    const start = now - rangeMs;
+    const BUCKETS = 20;
+    const bucketMs = rangeMs / BUCKETS;
+    const inBuckets = new Array(BUCKETS).fill(0);
+    const outBuckets = new Array(BUCKETS).fill(0);
+    let hasRealData = false;
+    for (const p of payments) {
+      const t = new Date(p.createdAt).getTime();
+      if (Number.isNaN(t) || t < start || t > now) continue;
+      hasRealData = true;
+      const idx = Math.min(BUCKETS - 1, Math.max(0, Math.floor((t - start) / bucketMs)));
+      if (p.recipientPubkey === TREASURY_RECIPIENT_PUBKEY) inBuckets[idx] += p.amountSol;
+      else outBuckets[idx] += p.amountSol;
+    }
+    // Cumulative running totals — what the user actually wants to see is "money in/out
+    // over time," not a per-bucket spike, so each point is the sum so far.
+    let cIn = 0;
+    let cOut = 0;
+    const inSeries = inBuckets.map((v) => (cIn += v));
+    const outSeries = outBuckets.map((v) => (cOut += v));
+    // Synthetic gentle ramp when no real data — keeps the chart looking alive.
+    if (!hasRealData) {
+      for (let i = 0; i < BUCKETS; i++) {
+        inSeries[i] = (i + 1) * 0.18 + Math.sin(i * 0.6) * 0.12;
+        outSeries[i] = (i + 1) * 0.09 + Math.cos(i * 0.5) * 0.08;
+      }
+    }
+    const maxV = Math.max(...inSeries, ...outSeries, 0.01);
+
+    // SVG geometry: viewBox 400×140, top of plot y=20, bottom y=130 (plot height 110).
+    const toPoints = (series: number[]) =>
+      series
+        .map((v, i) => {
+          const x = (i / (BUCKETS - 1)) * 400;
+          const y = 130 - (v / maxV) * 110;
+          return `${x.toFixed(1)},${y.toFixed(1)}`;
+        })
+        .join(" ");
+
+    const linePoints = (series: number[]) => `M${toPoints(series).replaceAll(" ", " L")}`;
+    const areaPath = (series: number[]) => `${linePoints(series)} L400,140 L0,140 Z`;
+
+    return {
+      inLine: linePoints(inSeries),
+      outLine: linePoints(outSeries),
+      inArea: areaPath(inSeries),
+      outArea: areaPath(outSeries),
+      inflowTotal: cIn,
+      outflowTotal: cOut,
+      net: cIn - cOut,
+      hasRealData,
+    };
+  }, [payments, range]);
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[#04060c] text-white antialiased">
@@ -197,15 +383,22 @@ export default function Treasury() {
               title="Treasury Dashboard"
               subtitle="Economic coordination infrastructure for autonomous AI workforces."
               crumbs={[{ label: "Treasury" }]}
-              status={{ label: "Solana mainnet · settling", tone: "emerald" }}
+              status={{ label: "Solana devnet · live", tone: "emerald" }}
               actions={
                 <div className="flex items-center gap-2">
                   <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[11px] uppercase tracking-[0.25em] text-white/50 backdrop-blur">
                     <Network className="h-3.5 w-3.5 text-emerald-300" />
                     <span>slot</span>
-                    <span className="font-mono text-emerald-300">268,124,412</span>
+                    <span className="font-mono text-emerald-300">
+                      {liveSlot != null ? liveSlot.toLocaleString() : "—"}
+                    </span>
                   </div>
-                  <button className="group relative inline-flex items-center gap-2 overflow-hidden rounded-lg px-4 py-2 text-xs text-black">
+                  <button
+                    onClick={() => setDepositOpen(true)}
+                    disabled={!connected}
+                    title={!connected ? "Connect your wallet to deposit" : "Deposit SOL into the HiveMind treasury"}
+                    className="group relative inline-flex items-center gap-2 overflow-hidden rounded-lg px-4 py-2 text-xs text-black disabled:cursor-not-allowed disabled:opacity-50"
+                  >
                     <span className="absolute inset-0 bg-gradient-to-r from-emerald-300 to-cyan-300" />
                     <Wallet className="relative h-3.5 w-3.5" />
                     <span className="relative">Deposit</span>
@@ -289,25 +482,25 @@ export default function Treasury() {
                       <span>Treasury Composition</span>
                       <span className="text-emerald-300">balanced</span>
                     </div>
-                    <div className="mt-2 flex h-3 w-full overflow-hidden rounded-full">
-                      {wallets.map((w) => (
+                    <div className="mt-2 flex h-3 w-full overflow-hidden rounded-full bg-white/[0.04]">
+                      {compositionParts.map((p) => (
                         <div
-                          key={w.name}
+                          key={p.name}
                           className="h-full"
                           style={{
-                            width: `${(w.balance / total) * 100}%`,
-                            background: w.c,
-                            boxShadow: `0 0 12px ${w.c}80`,
+                            width: `${pct(p.value, total)}%`,
+                            background: p.c,
+                            boxShadow: `0 0 12px ${p.c}80`,
                           }}
-                          title={`${w.name} · ${w.balance.toFixed(2)} SOL`}
+                          title={`${p.name} · ${p.value.toFixed(2)} SOL`}
                         />
                       ))}
                     </div>
                     <div className="mt-2 flex flex-wrap gap-3 text-[10px]">
-                      {wallets.map((w) => (
-                        <span key={w.name} className="flex items-center gap-1.5 text-white/55">
-                          <span className="h-1.5 w-1.5 rounded-full" style={{ background: w.c, boxShadow: `0 0 6px ${w.c}` }} />
-                          {w.name} · {((w.balance / total) * 100).toFixed(0)}%
+                      {compositionParts.map((p) => (
+                        <span key={p.name} className="flex items-center gap-1.5 text-white/55">
+                          <span className="h-1.5 w-1.5 rounded-full" style={{ background: p.c, boxShadow: `0 0 6px ${p.c}` }} />
+                          {p.name} · {pct(p.value, total).toFixed(0)}%
                         </span>
                       ))}
                     </div>
@@ -341,24 +534,32 @@ export default function Treasury() {
                           <stop offset="100%" stopColor="#f59e0b" stopOpacity="0" />
                         </linearGradient>
                       </defs>
-                      <path d="M0,90 L40,82 L80,86 L120,68 L160,74 L200,52 L240,58 L280,38 L320,46 L360,24 L400,30 L400,140 L0,140 Z" fill="url(#trIn)" />
-                      <path d="M0,90 L40,82 L80,86 L120,68 L160,74 L200,52 L240,58 L280,38 L320,46 L360,24 L400,30" fill="none" stroke="#10b981" strokeWidth="1.6" />
-                      <path d="M0,108 L40,104 L80,106 L120,94 L160,98 L200,82 L240,88 L280,72 L320,80 L360,64 L400,72 L400,140 L0,140 Z" fill="url(#trOut)" />
-                      <path d="M0,108 L40,104 L80,106 L120,94 L160,98 L200,82 L240,88 L280,72 L320,80 L360,64 L400,72" fill="none" stroke="#f59e0b" strokeWidth="1.4" />
+                      <path d={cashflow.inArea} fill="url(#trIn)" />
+                      <path d={cashflow.inLine} fill="none" stroke="#10b981" strokeWidth="1.6" />
+                      <path d={cashflow.outArea} fill="url(#trOut)" />
+                      <path d={cashflow.outLine} fill="none" stroke="#f59e0b" strokeWidth="1.4" />
                     </svg>
                   </div>
                   <div className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
                     <div className="rounded-md bg-black/30 p-2">
                       <div className="text-white/40">Inflow</div>
-                      <div className="text-emerald-300 tabular-nums">+248.4</div>
+                      <div className="text-emerald-300 tabular-nums">
+                        {cashflow.hasRealData ? `+${cashflow.inflowTotal.toFixed(2)}` : "—"}
+                      </div>
                     </div>
                     <div className="rounded-md bg-black/30 p-2">
                       <div className="text-white/40">Outflow</div>
-                      <div className="text-amber-300 tabular-nums">−104.2</div>
+                      <div className="text-amber-300 tabular-nums">
+                        {cashflow.hasRealData ? `−${cashflow.outflowTotal.toFixed(2)}` : "—"}
+                      </div>
                     </div>
                     <div className="rounded-md bg-black/30 p-2">
                       <div className="text-white/40">Net</div>
-                      <div className="text-cyan-300 tabular-nums">+144.2</div>
+                      <div className="text-cyan-300 tabular-nums">
+                        {cashflow.hasRealData
+                          ? `${cashflow.net >= 0 ? "+" : ""}${cashflow.net.toFixed(2)}`
+                          : "—"}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -397,14 +598,14 @@ export default function Treasury() {
                     <div className="text-[11px] text-white/40">SOL · ≈ ${(w.balance * 184).toFixed(0)}</div>
                     <div className="mt-3 flex items-center justify-between text-[10px] text-white/50">
                       <span className="font-mono">{w.addr}</span>
-                      <span style={{ color: w.c }}>{((w.available / w.balance) * 100).toFixed(0)}% avail</span>
+                      <span style={{ color: w.c }}>{pct(w.available, w.balance).toFixed(0)}% avail</span>
                     </div>
                     <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/5">
                       <motion.div
                         className="h-full rounded-full"
                         style={{ background: w.c, boxShadow: `0 0 8px ${w.c}` }}
                         initial={{ width: 0 }}
-                        animate={{ width: `${(w.available / w.balance) * 100 || 0}%` }}
+                        animate={{ width: `${pct(w.available, w.balance)}%` }}
                         transition={{ duration: 1 }}
                       />
                     </div>
@@ -834,6 +1035,125 @@ export default function Treasury() {
               </Card>
             </div>
           </div>
+
+          {/* Deposit modal — real on-chain SystemProgram.transfer to the HiveMind treasury
+              pubkey on devnet. Records a payment intent server-side so the new deposit
+              shows up in the live transaction feed. */}
+          <AnimatePresence>
+            {depositOpen && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+                onClick={() => { if (!depositing) setDepositOpen(false); }}
+              >
+                <motion.div
+                  initial={{ scale: 0.96, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  exit={{ scale: 0.96, opacity: 0 }}
+                  onClick={(e) => e.stopPropagation()}
+                  className="w-full max-w-md rounded-2xl border border-white/10 bg-gradient-to-br from-[#0c1322] to-[#04060c] p-6 shadow-2xl"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div
+                        className="flex h-9 w-9 items-center justify-center rounded-xl border border-emerald-300/30"
+                        style={{ background: "linear-gradient(135deg, #10b98155, #10b98111)" }}
+                      >
+                        <Wallet className="h-4 w-4 text-emerald-300" />
+                      </div>
+                      <div>
+                        <div className="text-sm">Deposit to Treasury</div>
+                        <div className="text-[10px] text-white/40">Solana devnet · real SOL transfer</div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => { if (!depositing) setDepositOpen(false); }}
+                      className="text-white/40 hover:text-white"
+                      disabled={depositing}
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+
+                  <div className="mt-5 space-y-3">
+                    <div>
+                      <label className="text-[10px] uppercase tracking-[0.2em] text-white/50">Amount</label>
+                      <div className="mt-1 flex items-center gap-2 rounded-lg border border-white/10 bg-black/40 px-3 py-2.5">
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          max="10"
+                          value={depositAmount}
+                          onChange={(e) => setDepositAmount(e.target.value)}
+                          disabled={depositing}
+                          className="flex-1 bg-transparent text-lg tabular-nums text-white placeholder-white/30 outline-none"
+                          placeholder="0.10"
+                        />
+                        <span className="text-xs text-white/50">SOL</span>
+                      </div>
+                      <div className="mt-1 flex gap-1.5">
+                        {[0.1, 0.5, 1, 2].map((v) => (
+                          <button
+                            key={v}
+                            onClick={() => setDepositAmount(String(v))}
+                            disabled={depositing}
+                            className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px] text-white/60 hover:border-emerald-300/30 hover:text-emerald-200 disabled:opacity-50"
+                          >
+                            {v} SOL
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-white/5 bg-black/30 p-3 text-[11px] text-white/55">
+                      <div className="flex items-center justify-between">
+                        <span className="text-white/40">From</span>
+                        <span className="font-mono text-white/75">
+                          {publicKey ? `${publicKey.toBase58().slice(0, 6)}…${publicKey.toBase58().slice(-4)}` : "—"}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex items-center justify-between">
+                        <span className="text-white/40">To · HiveMind treasury</span>
+                        <span className="font-mono text-emerald-300/90">
+                          {TREASURY_RECIPIENT_PUBKEY.slice(0, 6)}…{TREASURY_RECIPIENT_PUBKEY.slice(-4)}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex items-center justify-between">
+                        <span className="text-white/40">Network</span>
+                        <span className="text-emerald-300/90">devnet</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 flex gap-2">
+                    <button
+                      onClick={() => { if (!depositing) setDepositOpen(false); }}
+                      disabled={depositing}
+                      className="flex-1 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white/80 hover:border-white/20 disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={submitDeposit}
+                      disabled={depositing}
+                      className="group relative flex-1 overflow-hidden rounded-lg px-3 py-2 text-xs text-black disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <span className="absolute inset-0 bg-gradient-to-r from-emerald-300 to-cyan-300" />
+                      <span className="relative inline-flex items-center justify-center gap-1.5">
+                        {depositing
+                          ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          : <Wallet className="h-3.5 w-3.5" />}
+                        {depositing ? "Confirming…" : "Sign & deposit"}
+                      </span>
+                    </button>
+                  </div>
+                </motion.div>
+              </motion.div>
+            )}
+          </AnimatePresence>
           </WalletGate>
         </div>
       </div>
