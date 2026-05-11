@@ -41,7 +41,7 @@ import {
 import { useAgents, useTasks, useHiveMindRealtime, useMemoryChunks } from "./hooks/useHiveMind";
 import { AgentMessageMarkdown } from "./components/agent-message-markdown";
 import { buildArtifactTree, dedupeArtifactsByPath, type ArtifactTreeNode } from "../lib/artifact-tree";
-import { SandpackProvider, SandpackPreview as SandpackFrame, useSandpack } from "@codesandbox/sandpack-react";
+import { SandpackProvider, SandpackPreview as SandpackFrame, SandpackConsole, useSandpack } from "@codesandbox/sandpack-react";
 
 // All agent invocations always use GPT-5 for best results.
 const AGENT_MODEL = "gpt-5";
@@ -1111,9 +1111,14 @@ function SandpackErrorMonitor({ onErrors }: { onErrors: (errs: string[]) => void
         (msg["type"] === "action" && msg["action"] === "show-error") ||
         msg["type"] === "compile-error" ||
         msg["type"] === "module-error" ||
-        (msg["type"] === "done" && msg["compilatonError"] === true);
+        (msg["type"] === "done" && msg["compilatonError"] === true) ||
+        (msg["type"] === "console" && (msg["method"] === "error" || msg["method"] === "warn"));
       if (!isErr) return;
-      const text = [msg["title"] ?? msg["name"], msg["message"]].filter(Boolean).join(": ");
+      // For console messages, extract the log data array
+      const logData = Array.isArray(msg["data"])
+        ? (msg["data"] as unknown[]).map(String).join(" ")
+        : null;
+      const text = logData ?? [msg["title"] ?? msg["name"], msg["message"]].filter(Boolean).join(": ");
       if (text) accRef.current.push(String(text));
       if (timerRef.current) clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => {
@@ -1212,7 +1217,11 @@ function SandpackLivePreview({
           <SandpackFrame
             showOpenInCodeSandbox={false}
             showRefreshButton
-            style={{ width: "100%", height: `${frameHeight}px` }}
+            style={{ width: "100%", height: `${Math.max(200, frameHeight - 120)}px` }}
+          />
+          <SandpackConsole
+            showSyntaxError
+            style={{ height: "120px", borderTop: "1px solid rgba(255,255,255,0.07)" }}
           />
         </SandpackProvider>
       </div>
