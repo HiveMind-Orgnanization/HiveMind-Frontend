@@ -5,7 +5,9 @@
   "rewrites": [
     { "source": "/api/:path*", "destination": "http://hivemind-backend-prod.eba-2pwjk2c2.ap-south-1.elasticbeanstalk.com/api/:path*" },
     { "source": "/health",     "destination": "http://hivemind-backend-prod.eba-2pwjk2c2.ap-south-1.elasticbeanstalk.com/health" },
-    { "source": "/preview/:path*", "destination": "http://hivemind-backend-prod.eba-2pwjk2c2.ap-south-1.elasticbeanstalk.com/preview/:path*" },
+    { "source": "/preview/:sessionId",   "destination": "http://hivemind-backend-prod.eba-2pwjk2c2.ap-south-1.elasticbeanstalk.com/preview/:sessionId/" },
+    { "source": "/preview/:sessionId/",  "destination": "http://hivemind-backend-prod.eba-2pwjk2c2.ap-south-1.elasticbeanstalk.com/preview/:sessionId/" },
+    { "source": "/preview/:sessionId/:path*", "destination": "http://hivemind-backend-prod.eba-2pwjk2c2.ap-south-1.elasticbeanstalk.com/preview/:sessionId/:path*" },
     { "source": "/(.*)",       "destination": "/index.html" }
   ],
   "headers": [
