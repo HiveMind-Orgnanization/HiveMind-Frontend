@@ -2173,129 +2173,49 @@ function AgentWorkspaceMissionBody({
           </div>
           <Particles count={22} />
 
-          <div className="relative flex min-h-0 flex-1 flex-col gap-6 px-6 py-6">
-            <div className="shrink-0">
-            <PageHeader
-              title="Agent Workspace"
-              subtitle={`Coordinating · ${mission.title}`}
-              crumbs={[{ label: "Mission Control", to: "/dashboard" }, { label: "Workspace" }]}
-              status={{
-                label:
-                  paused
-                    ? "Paused"
-                    : `${hiveTasks.length} synced tasks · ${hiveAgents.length || ALL_AGENTS.length} agents in registry`,
-                tone: paused ? "purple" : "emerald",
-              }}
-              actions={
-                <>
-                  <button
-                    type="button"
-                    onClick={() => setActivityDrawerOpen(true)}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-white/80 hover:border-cyan-300/30"
-                  >
-                    <LayoutPanelLeft className="h-3.5 w-3.5 text-cyan-300" />
-                    Activity
-                  </button>
-                  <button
-                    onClick={() => setPaused((p) => !p)}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-white/80 hover:border-cyan-300/30"
-                  >
-                    {paused ? <Play className="h-3.5 w-3.5 text-cyan-300" /> : <Pause className="h-3.5 w-3.5 text-cyan-300" />}
-                    {paused ? "Resume" : "Pause"}
-                  </button>
-                  <button
-                    onClick={() => navigate("/missions/new")}
-                    className="group relative inline-flex items-center gap-2 overflow-hidden rounded-lg px-3 py-2 text-xs text-black"
-                  >
-                    <span className="absolute inset-0 bg-gradient-to-r from-cyan-300 to-purple-300" />
-                    <Plus className="relative h-3.5 w-3.5" />
-                    <span className="relative">New Mission</span>
-                  </button>
-                </>
-              }
-            />
-            </div>
-
-            {/* 30% communication · 70% code + live preview — flex-1 fills remaining viewport under header */}
-            <div className="flex min-h-0 flex-1 flex-col gap-6 xl:flex-row xl:items-stretch">
+          <div className="relative flex min-h-0 flex-1 flex-col px-4 py-3">
+            {/* 30% communication · 70% code + live preview — fills full viewport under TopNav */}
+            <div className="flex min-h-0 flex-1 flex-col gap-3 xl:flex-row xl:items-stretch">
               {/* ── Agent Communication panel (30%) ── */}
               <div className="flex min-h-0 w-full flex-1 flex-col xl:flex-none xl:w-[30%] xl:max-w-md">
                 <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
 
-                  {/* Header */}
-                  <div className="border-b border-white/5 px-4 py-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <div className="flex h-6 w-6 items-center justify-center rounded-md bg-gradient-to-br from-cyan-300/30 to-purple-400/20">
-                          <MessageSquare className="h-3.5 w-3.5 text-cyan-300" />
-                        </div>
-                        <span className="text-sm font-semibold text-white/90">Agent Communication</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {autoInvoking && (
-                          <motion.div
-                            animate={{ opacity: [0.5, 1, 0.5] }}
-                            transition={{ duration: 1.5, repeat: Infinity }}
-                            className="flex items-center gap-1.5 rounded-full border border-cyan-300/30 bg-cyan-300/10 px-2 py-0.5"
-                          >
-                            <span className="h-1.5 w-1.5 rounded-full bg-cyan-300" />
-                            <span className="text-[9px] font-semibold uppercase tracking-widest text-cyan-300">Running</span>
-                          </motion.div>
-                        )}
-                        <span className="text-[10px] text-white/30">{messages.length} msgs</span>
-                      </div>
-                    </div>
-
-                    {/* Active agent phase bar */}
+                  {/* Active agent banner — only shown while swarm is running */}
+                  <AnimatePresence>
                     {activeAgent && (
                       <motion.div
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: "auto" }}
-                        exit={{ opacity: 0, height: 0 }}
-                        className="mt-2.5 flex items-center gap-2 rounded-lg border px-3 py-2"
-                        style={{
-                          borderColor: `${activeAgent.color}35`,
-                          background: `${activeAgent.color}0a`,
-                        }}
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.18 }}
+                        className="overflow-hidden shrink-0"
                       >
-                        <AgentAvatar name={activeAgent.name} color={activeAgent.color} size="sm" />
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-[11px] font-semibold" style={{ color: activeAgent.color }}>
-                              {activeAgent.name}
-                            </span>
-                            <span className="text-[9px] uppercase tracking-widest" style={{ color: `${activeAgent.color}80` }}>
-                              {activeAgent.phase}
-                            </span>
-                          </div>
-                          <div className="mt-1 flex items-center gap-1">
+                        <div
+                          className="flex items-center gap-2 border-b px-3 py-2"
+                          style={{ borderColor: `${activeAgent.color}25`, background: `${activeAgent.color}08` }}
+                        >
+                          <AgentAvatar name={activeAgent.name} color={activeAgent.color} size="sm" />
+                          <span className="text-[11px] font-semibold" style={{ color: activeAgent.color }}>
+                            {activeAgent.name}
+                          </span>
+                          <span className="text-[9px] uppercase tracking-widest" style={{ color: `${activeAgent.color}70` }}>
+                            {activeAgent.phase}
+                          </span>
+                          <div className="ml-auto flex items-center gap-1">
                             {[0, 0.2, 0.4].map((d) => (
                               <motion.span
                                 key={d}
-                                className="h-1 w-4 rounded-full"
+                                className="h-1 w-3 rounded-full"
                                 style={{ background: activeAgent.color }}
                                 animate={{ opacity: [0.2, 0.9, 0.2], scaleX: [0.6, 1, 0.6] }}
                                 transition={{ duration: 1.4, repeat: Infinity, delay: d }}
                               />
                             ))}
-                            <span className="ml-1 text-[10px] text-white/40">Generating…</span>
                           </div>
                         </div>
                       </motion.div>
                     )}
-
-                    {/* Boot spinner when auto-invoking but no active agent yet */}
-                    {autoInvoking && !activeAgent && (
-                      <motion.div
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        className="mt-2 flex items-center gap-2 text-[11px] text-white/40"
-                      >
-                        <Loader2 className="h-3 w-3 animate-spin text-cyan-300" />
-                        <span>Initialising agents…</span>
-                      </motion.div>
-                    )}
-                  </div>
+                  </AnimatePresence>
 
                   {/* Message feed */}
                   <div ref={feedRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 no-scrollbar">
@@ -2378,6 +2298,14 @@ function AgentWorkspaceMissionBody({
                       </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setActivityDrawerOpen(true)}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[11px] font-medium text-white/85 transition hover:border-cyan-300/35"
+                      >
+                        <LayoutPanelLeft className="h-3.5 w-3.5 text-cyan-300" aria-hidden />
+                        Activity
+                      </button>
                       {/* Live preview is instant via Sandpack; "Host" button deploys to EB for a shareable URL */}
                       <button
                         type="button"
