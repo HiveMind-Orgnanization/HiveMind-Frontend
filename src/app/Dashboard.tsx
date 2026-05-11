@@ -17,6 +17,7 @@ import { useMissions } from "./store";
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { toast } from "sonner";
 import { apiConfigured, swarmRunMissionApi } from "../lib/api";
+import { labelForModel } from "../lib/agent-models";
 import { useAgents, useTasks, useHiveMindActivity, useMissionLiveMetrics } from "./hooks/useHiveMind";
 
 const AGENT_UI_COLORS: Record<string, string> = {
@@ -127,17 +128,26 @@ export default function Dashboard() {
 
   const dashboardAgents = useMemo(() => {
     if (!apiConfigured() || apiAgents.length === 0) return [];
-    return apiAgents.map((a) => ({
-      name: a.specialization,
-      model: a.model,
-      status: a.trustScore >= 94 ? "Reasoning" : a.trustScore >= 88 ? "Streaming" : "Idle",
-      task: a.name,
-      rep: a.reputation,
-      latency: 90 + (a.trustScore % 420),
-      mem: 12 + (a.missionsCompleted % 80),
-      color: AGENT_UI_COLORS[a.specialization] ?? "#94a3b8",
-    }));
-  }, [apiAgents]);
+    // Prefer the per-role model the user picked for THIS mission (stored in mission.config
+    // .agentModels by MissionCreate). When no per-role override exists, fall back to the
+    // backend agent profile's default model label.
+    const missionAgentModels = ((active?.config as { agentModels?: Record<string, string> } | undefined)
+      ?.agentModels) ?? {};
+    return apiAgents.map((a) => {
+      const selected = missionAgentModels[a.specialization];
+      const model = selected ? labelForModel(selected) : a.model;
+      return {
+        name: a.specialization,
+        model,
+        status: a.trustScore >= 94 ? "Reasoning" : a.trustScore >= 88 ? "Streaming" : "Idle",
+        task: a.name,
+        rep: a.reputation,
+        latency: 90 + (a.trustScore % 420),
+        mem: 12 + (a.missionsCompleted % 80),
+        color: AGENT_UI_COLORS[a.specialization] ?? "#94a3b8",
+      };
+    });
+  }, [apiAgents, active]);
 
   // Analytics metrics derived from real API data
   const analyticsMetrics = useMemo(() => {
