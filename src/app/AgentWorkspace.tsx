@@ -957,6 +957,17 @@ const SANDPACK_SKIP_DEPS = new Set([
   "@types/react", "@types/react-dom", "@types/node",
 ]);
 
+/** Resolve @/ path alias to relative paths (Vite convention: @/ → /src/). */
+function resolveAtAlias(code: string, sp: string): string {
+  const dir = sp.replace(/\/[^/]+$/, ""); // e.g. /src/components
+  const parts = dir.split("/").filter(Boolean); // ["src", "components"]
+  const srcIdx = parts.indexOf("src");
+  if (srcIdx < 0) return code;
+  const levelsUp = parts.length - srcIdx - 1;
+  const prefix = levelsUp === 0 ? "." : Array(levelsUp).fill("..").join("/");
+  return code.replace(/(['"])@\/([^'"]+)\1/g, (_, q, p) => `${q}${prefix}/${p}${q}`);
+}
+
 function sandpackCss(css: string): string {
   return css
     .replace(/@tailwind\s+\w+;[ \t]*/gm, "")
@@ -992,7 +1003,10 @@ function buildSandpackFiles(artifacts: MissionArtifact[]): {
     }
 
     const sp = rel.startsWith("/") ? rel : `/${rel}`;
-    files[sp] = { code: sp.endsWith(".css") ? sandpackCss(art.content) : art.content };
+    let code = art.content;
+    if (sp.endsWith(".css")) code = sandpackCss(code);
+    else if (sp.match(/\.(tsx?|jsx?)$/)) code = resolveAtAlias(code, sp);
+    files[sp] = { code };
   }
 
   // Ensure a valid React entry point exists
