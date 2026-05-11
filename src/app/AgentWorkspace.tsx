@@ -1525,10 +1525,12 @@ function SandpackLivePreview({
     };
   }, []);
 
-  // "Generating" overlay: shown while the swarm is still producing code OR has finished
-  // but hasn't emitted real frontend source yet. Avoid flashing the Sandpack default
-  // "Hello world" stub while the agents are still working.
-  const showGenerating = !hasGeneratedAppCode && (swarmRunning || !hasFiles);
+  // "Generating" overlay: shown the entire time the swarm is running, AND when the swarm
+  // hasn't started yet. Previously we exited this state as soon as Development saved its
+  // first .tsx file — but the swarm keeps running (Marketing/Treasury/Coordination + repair
+  // rounds), and Sandpack would try to bundle the half-finished tree, producing a white
+  // blank iframe. Now we wait for the swarm to fully settle before bundling.
+  const showGenerating = swarmRunning || (!hasGeneratedAppCode && !hasFiles);
   if (showGenerating) {
     return (
       <div
