@@ -41,6 +41,7 @@ import {
 import { useAgents, useTasks, useHiveMindRealtime, useMemoryChunks } from "./hooks/useHiveMind";
 import { AgentMessageMarkdown } from "./components/agent-message-markdown";
 import { buildArtifactTree, dedupeArtifactsByPath, type ArtifactTreeNode } from "../lib/artifact-tree";
+import { SandpackProvider, SandpackPreview as SandpackFrame, useSandpack } from "@codesandbox/sandpack-react";
 
 // All agent invocations always use GPT-5 for best results.
 const AGENT_MODEL = "gpt-5";
@@ -941,6 +942,158 @@ function ArtifactTreeView({
   );
 }
 
+// ─── Sandpack in-browser preview ────────────────────────────────────────────
+
+const SANDPACK_SKIP_FILES = new Set([
+  "vite.config.ts", "vite.config.js", "vite.config.mts",
+  "postcss.config.js", "postcss.config.cjs", "postcss.config.ts",
+  "tailwind.config.ts", "tailwind.config.js",
+  ".eslintrc.js", ".eslintrc.cjs", ".eslintrc.json", ".prettierrc",
+]);
+
+const SANDPACK_SKIP_DEPS = new Set([
+  "vite", "@vitejs/plugin-react", "@vitejs/plugin-react-swc", "@tailwindcss/vite",
+  "typescript", "autoprefixer", "postcss", "tailwindcss",
+  "@types/react", "@types/react-dom", "@types/node",
+]);
+
+function sandpackCss(css: string): string {
+  return css
+    .replace(/@tailwind\s+\w+;[ \t]*/gm, "")
+    .replace(/@import\s+["']tailwindcss["'];[ \t]*/gm, "")
+    .replace(/@import\s+["']tailwindcss\/[^"']*["'];[ \t]*/gm, "");
+}
+
+function buildSandpackFiles(artifacts: MissionArtifact[]): {
+  files: Record<string, { code: string }>;
+  dependencies: Record<string, string>;
+} {
+  const deduped = dedupeArtifactsByPath(artifacts);
+  const hasFe = deduped.some((a) => a.path.startsWith("frontend/"));
+  const relevant = hasFe
+    ? deduped.filter((a) => a.kind === "file" && a.path.startsWith("frontend/"))
+    : deduped.filter((a) => a.kind === "file" && !a.path.startsWith("backend/") && !a.path.startsWith("docs/"));
+
+  const files: Record<string, { code: string }> = {};
+  let dependencies: Record<string, string> = {};
+
+  for (const art of relevant) {
+    let rel = hasFe ? art.path.replace(/^frontend\//, "") : art.path;
+    const fname = rel.split("/").pop() ?? "";
+    if (SANDPACK_SKIP_FILES.has(fname)) continue;
+
+    if (rel === "package.json") {
+      try {
+        const pkg = JSON.parse(art.content) as { dependencies?: Record<string, string> };
+        dependencies = { ...pkg.dependencies };
+        for (const d of SANDPACK_SKIP_DEPS) delete dependencies[d];
+      } catch { /* ignore */ }
+      continue;
+    }
+
+    const sp = rel.startsWith("/") ? rel : `/${rel}`;
+    files[sp] = { code: sp.endsWith(".css") ? sandpackCss(art.content) : art.content };
+  }
+
+  // Ensure a valid React entry point exists
+  if (!files["/src/main.tsx"] && !files["/src/index.tsx"] && !files["/src/main.ts"]) {
+    const appPath = files["/src/App.tsx"] ? "./App" : (Object.keys(files).find((f) => f.match(/\/src\/\w+\.tsx$/)) ?? "").replace("/src/", "./").replace(".tsx", "");
+    if (appPath) {
+      files["/src/main.tsx"] = {
+        code: `import React from "react";\nimport ReactDOM from "react-dom/client";\nimport App from "${appPath}";\nimport "./index.css";\nReactDOM.createRoot(document.getElementById("root")!).render(<React.StrictMode><App /></React.StrictMode>);`,
+      };
+    }
+  }
+
+  return { files, dependencies };
+}
+
+function SandpackErrorMonitor({ onErrors }: { onErrors: (errs: string[]) => void }) {
+  const { listen } = useSandpack();
+  const accRef = useRef<string[]>([]);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const unsub = listen((msg: Record<string, unknown>) => {
+      const isErr =
+        (msg["type"] === "action" && msg["action"] === "show-error") ||
+        msg["type"] === "compile-error";
+      if (!isErr) return;
+      const text = [msg["title"], msg["message"]].filter(Boolean).join(": ");
+      if (text) accRef.current.push(text);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        if (accRef.current.length > 0) { onErrors([...accRef.current]); accRef.current = []; }
+      }, 2500);
+    });
+    return () => { unsub(); if (timerRef.current) clearTimeout(timerRef.current); };
+  }, [listen, onErrors]);
+
+  return null;
+}
+
+function SandpackLivePreview({
+  artifacts,
+  autoFixing,
+  onErrors,
+}: {
+  artifacts: MissionArtifact[];
+  autoFixing: boolean;
+  onErrors: (errs: string[]) => void;
+}) {
+  const { files, dependencies } = useMemo(() => buildSandpackFiles(artifacts), [artifacts]);
+  const hasFiles = Object.keys(files).length > 0;
+
+  // Stable key — changes only when artifact set grows/changes, forcing re-bundle
+  const sandpackKey = useMemo(() => {
+    const d = dedupeArtifactsByPath(artifacts);
+    return `${d.length}-${d[d.length - 1]?.createdAt ?? 0}`;
+  }, [artifacts]);
+
+  if (!hasFiles) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-dashed border-white/[0.14] bg-gradient-to-b from-black/25 to-transparent">
+        <WorkspacePanelEmptyState
+          icon={Sparkles}
+          title="Preview ready"
+          description="Run the swarm to generate your app — the live preview will appear here instantly with no build step."
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-white/10">
+      {autoFixing && (
+        <div className="flex items-center gap-2 border-b border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5 text-[11px] text-cyan-300">
+          <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
+          AI is auto-fixing preview errors…
+        </div>
+      )}
+      {/* flex-1 wrapper gives Sandpack a measured height to fill */}
+      <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+        <SandpackProvider
+          key={sandpackKey}
+          template="react-ts"
+          files={files}
+          customSetup={{ dependencies }}
+          options={{ externalResources: ["https://cdn.tailwindcss.com"] }}
+          theme="dark"
+        >
+          <SandpackErrorMonitor onErrors={onErrors} />
+          <SandpackFrame
+            showOpenInCodeSandbox={false}
+            showRefreshButton
+            style={{ flex: 1, height: "100%", minHeight: 0 }}
+          />
+        </SandpackProvider>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 function AgentWorkspaceMissionBody({
   mission,
   patchLocal,
@@ -979,6 +1132,8 @@ function AgentWorkspaceMissionBody({
   const [collapsedArtifactFolders, setCollapsedArtifactFolders] = useState<Set<string>>(new Set());
   const [zipDownloading, setZipDownloading] = useState(false);
   const [previewStarting, setPreviewStarting] = useState(false);
+  const [previewAutoFixing, setPreviewAutoFixing] = useState(false);
+  const previewAutoFixAttemptsRef = useRef(0);
   /** Right panel: source tree vs hosted preview iframe (proxied /preview on dev). */
   const [workspacePanelTab, setWorkspacePanelTab] = useState<"code" | "preview">("code");
   const [previewEmbedUrl, setPreviewEmbedUrl] = useState<string | null>(null);
@@ -1334,6 +1489,39 @@ function AgentWorkspaceMissionBody({
     return null;
   };
 
+  const handlePreviewAutoFix = useCallback(async (errors: string[]) => {
+    const MAX_ATTEMPTS = 3;
+    if (previewAutoFixAttemptsRef.current >= MAX_ATTEMPTS) return;
+    previewAutoFixAttemptsRef.current += 1;
+
+    const devAgentId =
+      resolveAgentId("Development") ??
+      resolveAgentId("Design") ??
+      resolveAgentId("Strategy");
+    if (!devAgentId) { toast.error("No agent available to auto-fix preview"); return; }
+
+    setPreviewAutoFixing(true);
+    const errText = errors.slice(0, 5).join("\n");
+    const result = await invokeAgentApi(devAgentId, {
+      message: `The in-browser React preview has these build/runtime errors:\n\n${errText}\n\nFix the affected source files so the preview renders without errors. Focus on TypeScript errors, missing imports, module resolution, and JSX issues. Return updated file contents.`,
+      missionId: mission.id,
+      persistArtifactUpdates: true,
+      includeArtifacts: true,
+    });
+
+    if (result.ok && !result.persistArtifactParseFailed) {
+      const fresh = await fetchMissionArtifactsApi(mission.id);
+      if (fresh) {
+        setArtifacts(fresh);
+        toast.success("Preview auto-fixed", { duration: 3000 });
+      }
+    } else {
+      toast.error("Auto-fix did not produce usable patches — check artifacts manually");
+    }
+    setPreviewAutoFixing(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mission.id, artifacts]);
+
   // simulate streaming new messages (demo mode only — API mode relies on real invokes)
   useEffect(() => {
     if (paused || apiConfigured()) return;
@@ -1502,6 +1690,13 @@ function AgentWorkspaceMissionBody({
           if (cur && a.some((x) => x.id === cur)) return cur;
           return a[0]?.id ?? null;
         });
+        // Auto-switch to live preview if frontend files exist
+        const hasFrontend = a.some((x) => x.path.startsWith("frontend/") || x.path.startsWith("src/"));
+        if (hasFrontend) {
+          previewAutoFixAttemptsRef.current = 0; // reset auto-fix attempts for new swarm run
+          setWorkspacePanelTab("preview");
+          toast.success("Live preview ready", { description: "Your app is running in the preview panel.", duration: 4000 });
+        }
       } else if (getAuthToken()) {
         toast.error("Could not load mission code files", {
           description:
@@ -1512,7 +1707,7 @@ function AgentWorkspaceMissionBody({
 
       if (data.verification?.ok && a && a.length > 0) {
         void loadHostedPreview({ quiet: true }).then((ok) => {
-          if (ok) toast.success("Preview is live — check the Preview tab");
+          if (ok) toast.success("Hosted preview ready — check the Preview tab");
         });
       }
 
@@ -2046,13 +2241,14 @@ function AgentWorkspaceMissionBody({
                       </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
+                      {/* Live preview is instant via Sandpack; "Host" button deploys to EB for a shareable URL */}
                       <button
                         type="button"
                         disabled={uniqueArtifactPaths === 0 || previewStarting || !getAuthToken()}
                         title={
                           !getAuthToken()
-                            ? "Sign in with your wallet to preview"
-                            : "Materialize artifacts, install, build — embeds in Preview tab"
+                            ? "Sign in with your wallet to deploy"
+                            : "Deploy to hosted server for a shareable URL"
                         }
                         onClick={() => void loadHostedPreview()}
                         className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[11px] font-medium text-white/85 transition hover:border-cyan-300/35 disabled:cursor-not-allowed disabled:opacity-40"
@@ -2060,22 +2256,21 @@ function AgentWorkspaceMissionBody({
                         {previewStarting ? (
                           <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-300" aria-hidden />
                         ) : (
-                          <Zap className="h-3.5 w-3.5 text-cyan-300" aria-hidden />
+                          <ExternalLink className="h-3.5 w-3.5 text-cyan-300" aria-hidden />
                         )}
-                        Build preview
+                        Host
                       </button>
-                      <button
-                        type="button"
-                        disabled={!previewEmbedUrl}
-                        title="Open the current preview URL in a new tab"
-                        onClick={() => {
-                          if (previewEmbedUrl) window.open(previewEmbedUrl, "_blank", "noopener,noreferrer");
-                        }}
-                        className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1.5 text-[11px] text-white/80 transition hover:border-cyan-300/35 disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        <ExternalLink className="h-3.5 w-3.5 text-cyan-300" aria-hidden />
-                        Tab
-                      </button>
+                      {previewEmbedUrl && (
+                        <button
+                          type="button"
+                          title="Open hosted preview in a new tab"
+                          onClick={() => window.open(previewEmbedUrl, "_blank", "noopener,noreferrer")}
+                          className="inline-flex items-center gap-1 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2 py-1.5 text-[11px] text-cyan-300 transition hover:border-cyan-300/50"
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+                          Hosted URL
+                        </button>
+                      )}
                       <button
                         type="button"
                         disabled={uniqueArtifactPaths === 0 || zipDownloading || !getAuthToken()}
@@ -2239,28 +2434,11 @@ function AgentWorkspaceMissionBody({
                   </div>
                   ) : (
                   <div className="relative flex min-h-0 flex-1 flex-col bg-black/30 p-2">
-                    {previewEmbedUrl ? (
-                      <iframe
-                        title="Mission preview"
-                        src={previewEmbedUrl}
-                        className="min-h-0 w-full flex-1 rounded-lg border border-white/10 bg-white"
-                        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
-                      />
-                    ) : (
-                      <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-dashed border-white/[0.14] bg-gradient-to-b from-black/25 to-transparent">
-                        <WorkspacePanelEmptyState
-                          icon={Sparkles}
-                          title="Preview not built"
-                          description="We’ll render your generated app in this frame after a successful build. Verified swarms try to start automatically; you can trigger a build anytime."
-                          footnote={
-                            <>
-                              Press <span className="rounded border border-cyan-400/25 bg-cyan-400/10 px-1.5 py-px font-mono text-[11px] text-cyan-200/90">Build preview</span>{" "}
-                              in the bar above. In local dev, previews load through the same origin so the iframe stays secure.
-                            </>
-                          }
-                        />
-                      </div>
-                    )}
+                    <SandpackLivePreview
+                      artifacts={artifacts}
+                      autoFixing={previewAutoFixing}
+                      onErrors={handlePreviewAutoFix}
+                    />
                   </div>
                   )}
                 </Card>
