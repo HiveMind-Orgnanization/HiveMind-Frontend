@@ -1038,6 +1038,37 @@ function sandpackJsTs(code: string): string {
   return next;
 }
 
+/**
+ * Swarm-generated React often uses `export function App` without `export default`, or `import App from "./App"`
+ * while the file on disk is `app.tsx` — Sandpack then renders `<App />` as undefined ("Element type is invalid").
+ */
+function sandpackFixAppEntryExportsAndImports(files: Record<string, { code: string }>): void {
+  const appKey = ["/src/App.tsx", "/src/app.tsx", "/src/App.jsx", "/src/app.jsx"].find((k) => files[k]);
+  if (!appKey) return;
+  const importStem = (appKey.split("/").pop() ?? "App").replace(/\.(tsx|jsx|ts|js)$/i, "");
+  const raw = files[appKey]!.code;
+  if (!/\bexport\s+default\b/.test(raw)) {
+    if (
+      /\bexport\s+function\s+App\b/.test(raw) ||
+      /(?:^|\n)\s*(?:export\s+)?(?:async\s+)?function\s+App\s*\(/.test(raw) ||
+      /\bconst\s+App\s*=/.test(raw) ||
+      /\bconst\s+App\s*:\s*React\.FC/.test(raw)
+    ) {
+      files[appKey] = { code: `${raw.trimEnd()}\n\nexport default App;\n` };
+    }
+  }
+  const entryKeys = [
+    "/src/main.tsx", "/src/main.ts", "/src/index.tsx", "/src/index.ts", "/src/main.jsx", "/src/index.jsx",
+  ];
+  for (const ek of entryKeys) {
+    const m = files[ek];
+    if (!m) continue;
+    let c = m.code;
+    c = c.replace(/from\s+(["'])\.\/([Aa]pp)\1/g, (_full, q: string) => `from ${q}./${importStem}${q}`);
+    files[ek] = { code: c };
+  }
+}
+
 function buildSandpackFiles(artifacts: MissionArtifact[]): {
   files: Record<string, { code: string }>;
   dependencies: Record<string, string>;
@@ -1111,6 +1142,8 @@ function buildSandpackFiles(artifacts: MissionArtifact[]): {
       if (!allPaths.has(abs)) { files[abs] = { code: "" }; allPaths.add(abs); }
     }
   }
+
+  sandpackFixAppEntryExportsAndImports(files);
 
   // Inject a base CSS reset so the preview is never completely invisible.
   // The Tailwind Play CDN handles utility classes; this guarantees box-sizing + font.

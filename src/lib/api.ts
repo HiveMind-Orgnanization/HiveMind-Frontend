@@ -167,6 +167,31 @@ export type SwarmProgress = {
   partialResults: Array<{ role: string; agentName: string; replySnippet: string; provider: string; model: string }>;
 };
 
+/** Transient gateway / load errors while polling — one failure should not abort the whole swarm. */
+async function fetchWithRetryForGateway(
+  path: string,
+  init: RequestInit | undefined,
+  opts: { attempts?: number; baseDelayMs?: number } = {},
+): Promise<Response> {
+  const attempts = opts.attempts ?? 6;
+  const base = opts.baseDelayMs ?? 400;
+  let last: Response | undefined;
+  for (let a = 0; a < attempts; a++) {
+    try {
+      last = await apiFetch(path, init);
+      if (last.ok) return last;
+      if (last.status === 401 || last.status === 403) return last;
+      const retryable = last.status === 502 || last.status === 503 || last.status === 504;
+      if (!retryable || a === attempts - 1) return last;
+    } catch {
+      if (a === attempts - 1) throw new Error("network_error_after_retries");
+      /* network drop — treat like a transient gateway failure and retry */
+    }
+    await new Promise<void>((r) => setTimeout(r, base * (a + 1)));
+  }
+  return last!;
+}
+
 export async function swarmRunMissionApi(
   missionId: string,
   ctx: { title: string; objective: string },
@@ -195,10 +220,21 @@ export async function swarmRunMissionApi(
     // Poll until done (max 8 minutes, 4-second intervals).
     for (let i = 0; i < 120; i++) {
       await new Promise<void>((res) => setTimeout(res, 4000));
-      const poll = await apiFetch(
+      const poll = await fetchWithRetryForGateway(
         `/api/missions/${encodeURIComponent(missionId)}/swarm-status/${encodeURIComponent(jobId)}`,
+        undefined,
       );
-      if (!poll.ok) return { ok: false, status: poll.status, message: `Status check failed (${poll.status}).` };
+      if (!poll.ok) {
+        const hint =
+          poll.status === 502 || poll.status === 503 || poll.status === 504
+            ? " The API had a brief gateway error after retries — try running the swarm again, or set VITE_API_URL to your Elastic Beanstalk URL so the browser calls the API directly (avoids Vercel proxy limits)."
+            : "";
+        return {
+          ok: false,
+          status: poll.status,
+          message: `Status check failed (${poll.status}).${hint}`,
+        };
+      }
       const s = (await poll.json()) as {
         status: string;
         data?: SwarmRunResult;
@@ -583,11 +619,12 @@ export async function invokeAgentApi(
 ): Promise<InvokeAgentApiResult> {
   if (!apiConfigured()) return { ok: false, reason: "network" };
   try {
-    const r = await apiFetch(`/api/agents/${encodeURIComponent(agentId)}/invoke`, {
+    const invokePath = `/api/agents/${encodeURIComponent(agentId)}/invoke`;
+    const r = await fetchWithRetryForGateway(invokePath, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    });
+    }, { attempts: 5, baseDelayMs: 600 });
     if (r.status === 401) return { ok: false, reason: "unauthorized" };
     if (!r.ok) return { ok: false, reason: "network" };
     const j = (await r.json()) as {
