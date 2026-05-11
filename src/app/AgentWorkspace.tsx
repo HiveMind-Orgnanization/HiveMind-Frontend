@@ -65,7 +65,7 @@ type ChatMsg = {
   text: string;
   state?: "thinking" | "delegating" | "executing" | "approved" | "failed";
   ts: string;
-  kind?: "system" | "system_done" | "system_warn" | "hivemind_swarm";
+  kind?: "system" | "system_done" | "system_warn" | "hivemind_swarm" | "preview_autofix";
   /** Elapsed seconds stored when swarm completes. */
   elapsedSecs?: number;
   /** Per-agent thought entries for the collapsible reasoning panel. */
@@ -389,6 +389,32 @@ async function mergeMissionWorkspaceFromApi(
   }
 }
 
+/**
+ * Any HiveMind/agent bubble persisted as `state: "thinking"` (or "delegating"/"executing")
+ * was an in-flight invoke when the user reloaded — it can never finish in this page session.
+ * Mark it failed with a clear note so the spinner stops and we don't show ghost "Thinking for 125s"
+ * cards stacked from every reload. Also stops handlePreviewAutoFix from inheriting a stale ref.
+ */
+function finalizeOrphanedInFlightMessages(messages: ChatMsg[]): ChatMsg[] {
+  let changed = false;
+  const out = messages.map((m) => {
+    if (m.state !== "thinking" && m.state !== "delegating" && m.state !== "executing") return m;
+    changed = true;
+    // Mark every in-progress thought as done so the "Coordinating with the next agent…" loader stops.
+    const thoughts = (m.thoughts ?? []).map((t) => (t.done ? t : { ...t, done: true }));
+    return {
+      ...m,
+      state: "failed" as const,
+      thoughts,
+      text:
+        m.text && m.text.trim().length > 0
+          ? m.text
+          : "This run was interrupted by a page reload. Send a follow-up in chat to continue.",
+    };
+  });
+  return changed ? out : messages;
+}
+
 function missionWorkspaceSeed(missionId: string): {
   messages: ChatMsg[];
   logLines: LogLine[];
@@ -398,7 +424,7 @@ function missionWorkspaceSeed(missionId: string): {
   const persisted = loadWorkspaceSnapshot(missionId);
   if (persisted) {
     return {
-      messages: persisted.messages,
+      messages: finalizeOrphanedInFlightMessages(persisted.messages),
       logLines: persisted.logLines,
       timelineEvents: persisted.timelineEvents,
       selectedAgent: persisted.selectedAgent,
@@ -2024,8 +2050,18 @@ function AgentWorkspaceMissionBody({
 
     // First attempt → spawn a fresh "Oh no, hit an error" bubble. Later attempts append a thought
     // into the same bubble so the user sees one cohesive narrative, not five duplicate cards.
+    // Also: on page reload, the persisted messages may already contain a previous auto-fix bubble
+    // (now in `failed` state from the orphan sweep). Reuse the most-recent one rather than stacking
+    // a new "Thinking for…" card every time the user re-opens the page.
     let bubbleId = autoFixBubbleIdRef.current;
-    if (attempt === 1 || bubbleId === null) {
+    if (bubbleId === null) {
+      const existing = [...messages].reverse().find((m) => m.kind === "preview_autofix");
+      if (existing) {
+        bubbleId = existing.id;
+        autoFixBubbleIdRef.current = bubbleId;
+      }
+    }
+    if (attempt === 1 && bubbleId === null) {
       bubbleId = Date.now() + Math.floor(Math.random() * 9999);
       autoFixBubbleIdRef.current = bubbleId;
       setMessages((prev) => [
@@ -2036,7 +2072,7 @@ function AgentWorkspaceMissionBody({
           color: "#22d3ee",
           text: "",
           state: "thinking",
-          kind: "hivemind_swarm",
+          kind: "preview_autofix",
           ts: new Date().toLocaleTimeString("en-US", { hour12: false }),
           thoughts: [
             {
@@ -2056,8 +2092,13 @@ function AgentWorkspaceMissionBody({
           ],
         },
       ]);
-    } else {
-      // Append a new in-progress Development thought for this retry.
+    } else if (bubbleId !== null) {
+      // Append a new in-progress Development thought for this retry. When attempt === 1 we
+      // got here by reusing a previously-failed bubble (page reload) — phrase it as "Resuming"
+      // not "Retry 1" so the user knows it's the same fix attempt picked up again.
+      const retryText = attempt === 1
+        ? "Resuming after page reload — patching again…"
+        : `Retry ${attempt} — different angle…`;
       setMessages((prev) =>
         prev.map((m) =>
           m.id !== bubbleId
@@ -2065,12 +2106,13 @@ function AgentWorkspaceMissionBody({
             : {
                 ...m,
                 state: "thinking",
+                text: "", // clear any "interrupted" finalize note
                 thoughts: [
                   ...(m.thoughts ?? []),
                   {
                     agent: "Development",
                     color: devColor,
-                    text: `Retry ${attempt} — different angle…`,
+                    text: retryText,
                     ts: new Date().toLocaleTimeString("en-US", { hour12: false }),
                     done: false,
                   },
