@@ -67,7 +67,7 @@ const AGENT_PHASE: Record<string, { phase: string; estMin: number }> = {
   Memory: { phase: "Recall", estMin: 2 },
 };
 
-import { AGENT_MODEL_CATALOG as OPENAI_MODELS } from "../lib/agent-models";
+import { AGENT_MODEL_CATALOG as OPENAI_MODELS, ROLE_HEADLINE_MODEL as SHARED_ROLE_HEADLINE_MODEL } from "../lib/agent-models";
 type OpenAiModelId = string;
 
 const TIER_COLOR: Record<string, string> = {
@@ -81,20 +81,9 @@ const TIER_COLOR: Record<string, string> = {
 // solMult on each model only affects the displayed cost ladder when the user upgrades.
 const UNIFIED_AGENT_MODEL = "gpt-5.5" as OpenAiModelId;
 
-/** Default model PER ROLE — uses LIGHT or STANDARD tier only. Premium tiers (Claude Opus,
- *  Gemini Pro, GPT-5.5/Pro, o1/o3) are surfaced in the dropdown as "Coming soon" — disabled
- *  for now, but visible to advertise HiveMind's multi-provider routing roadmap. */
-const ROLE_HEADLINE_MODEL: Record<string, OpenAiModelId> = {
-  Strategy:     "gpt-4o",          // standard 1.4
-  Research:     "deepseek-v3",     // standard 1.5
-  Design:       "gpt-4.1",         // standard 1.6
-  Development:  "llama-4-70b",     // standard 1.6
-  Marketing:    "llama-4-70b",     // standard 1.6
-  Treasury:     "mixtral-8x22b",   // standard 1.4
-  Analytics:    "deepseek-v3",     // standard 1.5
-  Coordination: "gpt-4.1",         // standard 1.6
-  Memory:       "gpt-4o-mini",     // light 1.0
-};
+/** Per-role default model — re-exported from the shared catalog. Light/standard tier only;
+ *  premium tiers are surfaced in the dropdown as "Coming soon" and intentionally NOT used. */
+const ROLE_HEADLINE_MODEL: Record<string, OpenAiModelId> = SHARED_ROLE_HEADLINE_MODEL;
 
 // Per-priority defaults — low stays in light tier, std uses headline (standard), high/crit
 // move toward the upper end of *standard* (no premium yet — those are "Coming soon").

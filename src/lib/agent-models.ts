@@ -54,3 +54,42 @@ export function findAgentModel(id: string | null | undefined): AgentModel | null
   if (!id) return null;
   return _BY_ID.get(id) ?? null;
 }
+
+/**
+ * Per-role default model. Single source of truth shared by Mission Create (initial
+ * selection + per-priority defaults) and Dashboard (fallback when a mission stores
+ * a missing or legacy-uniform model id — older missions saved gpt-5.5 for every role
+ * before the per-role defaults landed). Light/standard tier only — premium models
+ * are surfaced in the dropdown as "Coming soon" and intentionally NOT used here.
+ */
+export const ROLE_HEADLINE_MODEL: Record<string, string> = {
+  Strategy:     "gpt-4o",
+  Research:     "deepseek-v3",
+  Design:       "gpt-4.1",
+  Development:  "llama-4-70b",
+  Marketing:    "llama-4-70b",
+  Treasury:     "mixtral-8x22b",
+  Analytics:    "deepseek-v3",
+  Coordination: "gpt-4.1",
+  Memory:       "gpt-4o-mini",
+};
+
+/**
+ * Resolve the model id to display for a given role on the dashboard.
+ *
+ * Order of preference:
+ *   1. Per-role override stored on the mission (`mission.config.agentModels[role]`),
+ *      as long as it is NOT the legacy uniform "gpt-5.5" (which older missions saved
+ *      for every role before per-role defaults landed — that value is effectively
+ *      "no choice was made" and we want to surface a more specific default).
+ *   2. Per-role headline default from ROLE_HEADLINE_MODEL.
+ *   3. null — caller should fall back to whatever the backend agent profile reports.
+ */
+export function resolveAgentModelId(
+  role: string,
+  missionAgentModels: Record<string, string> | null | undefined,
+): string | null {
+  const stored = missionAgentModels?.[role];
+  if (stored && stored !== "gpt-5.5") return stored;
+  return ROLE_HEADLINE_MODEL[role] ?? null;
+}

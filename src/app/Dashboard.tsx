@@ -17,7 +17,7 @@ import { useMissions } from "./store";
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { toast } from "sonner";
 import { apiConfigured, swarmRunMissionApi } from "../lib/api";
-import { labelForModel } from "../lib/agent-models";
+import { labelForModel, resolveAgentModelId } from "../lib/agent-models";
 import { useAgents, useTasks, useHiveMindActivity, useMissionLiveMetrics } from "./hooks/useHiveMind";
 
 const AGENT_UI_COLORS: Record<string, string> = {
@@ -129,13 +129,15 @@ export default function Dashboard() {
   const dashboardAgents = useMemo(() => {
     if (!apiConfigured() || apiAgents.length === 0) return [];
     // Prefer the per-role model the user picked for THIS mission (stored in mission.config
-    // .agentModels by MissionCreate). When no per-role override exists, fall back to the
-    // backend agent profile's default model label.
+    // .agentModels by MissionCreate). Legacy missions saved "gpt-5.5" for every role before
+    // per-role defaults landed — resolveAgentModelId() treats that as "no choice" and
+    // returns the per-role headline default instead, so the dashboard never shows uniform
+    // "GPT-5.5" cards. Final fallback is the backend agent profile's model label.
     const missionAgentModels = ((active?.config as { agentModels?: Record<string, string> } | undefined)
       ?.agentModels) ?? {};
     return apiAgents.map((a) => {
-      const selected = missionAgentModels[a.specialization];
-      const model = selected ? labelForModel(selected) : a.model;
+      const resolvedId = resolveAgentModelId(a.specialization, missionAgentModels);
+      const model = resolvedId ? labelForModel(resolvedId) : a.model;
       return {
         name: a.specialization,
         model,
