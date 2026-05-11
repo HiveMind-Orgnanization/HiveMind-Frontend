@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { useWallet } from "@solana/wallet-adapter-react";
 import { useHiveMindRealtime } from "../hooks/useHiveMind";
 
 export type NotifSeverity = "info" | "success" | "warning" | "error" | "critical";
@@ -60,10 +61,21 @@ const seedNotifs: Notif[] = [
 ];
 
 let notifCounter = 1100;
+void seedNotifs; // demo data retained for tests/Storybook; not used in the live provider.
 
 export function NotificationsProvider({ children }: { children: React.ReactNode }) {
-  const [items, setItems] = useState<Notif[]>(seedNotifs);
+  // Start empty — no fake demo entries leaking the same "7 unread" badge across every wallet.
+  // Real WS events from the backend populate the feed below.
+  const [items, setItems] = useState<Notif[]>([]);
   const unread = items.filter((n) => !n.read).length;
+  const { publicKey } = useWallet();
+  const walletAddress = publicKey?.toBase58() ?? null;
+
+  // Reset notifications whenever the connected wallet changes — different wallets must not
+  // share notification history (was static across every wallet because seed was hardcoded).
+  useEffect(() => {
+    setItems([]);
+  }, [walletAddress]);
 
   const markAll = useCallback(() => setItems((arr) => arr.map((n) => ({ ...n, read: true }))), []);
   const dismiss = useCallback((id: string) => setItems((arr) => arr.filter((n) => n.id !== id)), []);

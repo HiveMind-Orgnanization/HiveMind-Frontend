@@ -261,13 +261,6 @@ export default function Dashboard() {
                         <Rocket className="relative h-4 w-4" />
                         <span className="relative">Create First Mission</span>
                       </Link>
-                      <button
-                        onClick={reset}
-                        className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.03] px-5 py-2.5 text-sm text-white/80 hover:border-cyan-300/40"
-                      >
-                        <RotateCcw className="h-4 w-4 text-cyan-300" />
-                        Load Demo Mission
-                      </button>
                     </div>
                   )}
                   {!walletConnected && (

@@ -28,6 +28,7 @@ export function Sidebar() {
   type CreditsState =
     | { kind: "hidden" }
     | { kind: "activating" }
+    | { kind: "needs_activation" }
     | { kind: "ready"; uses: number; total: number };
   const [credits, setCredits] = useState<CreditsState>({ kind: "hidden" });
   const { publicKey } = useWallet();
@@ -58,9 +59,16 @@ export function Sidebar() {
         return;
       }
       // Not registered yet — auto-register may still be in flight. Show "Activating…" and
-      // poll every 3 s for up to ~45 s.
-      setCredits({ kind: "activating" });
-      if (attempts < 15) pollHandle = setTimeout(tick, 3000);
+      // poll every 3 s for up to ~45 s. After that, the wallet most likely rejected or never
+      // saw the Solflare prompt — flip to a "needs_activation" state with a clickable link
+      // to /trial where the user can fire it manually. (Previous behaviour: stuck on
+      // "Activating…" forever, which is what the user reported.)
+      if (attempts < 15) {
+        setCredits({ kind: "activating" });
+        pollHandle = setTimeout(tick, 3000);
+      } else {
+        setCredits({ kind: "needs_activation" });
+      }
     };
     const refetch = () => { attempts = 0; void tick(); };
     refetch();
@@ -219,6 +227,8 @@ export function Sidebar() {
                     <Loader2 className="h-3 w-3 animate-spin" />
                     Activating…
                   </span>
+                ) : credits.kind === "needs_activation" ? (
+                  <span className="text-amber-300/85">Tap to activate</span>
                 ) : (
                   <span className="tabular-nums text-cyan-300">{credits.uses}/{credits.total} free</span>
                 )}
