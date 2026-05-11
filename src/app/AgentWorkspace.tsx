@@ -1090,44 +1090,68 @@ body { margin: 0; font-family: system-ui, sans-serif; min-height: 100vh; }
 
 function SandpackErrorMonitor({ onErrors }: { onErrors: (errs: string[]) => void }) {
   const { sandpack, listen } = useSandpack();
+  // reportedRef prevents duplicate reports in the same error state.
+  // lastReportTimeRef allows re-firing after 30 s so a failed fix can be retried.
   const reportedRef = useRef(false);
+  const lastReportTimeRef = useRef(0);
   const accRef = useRef<string[]>([]);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Primary: read sandpack.errors state directly (catches all bundler errors)
+  // Primary: sandpack.errors state — bundler/compilation errors only.
   useEffect(() => {
-    const errs = (sandpack as unknown as { errors?: { message: string }[] }).errors ?? [];
-    if (errs.length > 0 && !reportedRef.current) {
-      reportedRef.current = true;
-      onErrors(errs.map((e) => e.message));
-    }
-    if (errs.length === 0) reportedRef.current = false;
+    try {
+      const errs =
+        ((sandpack as unknown as { errors?: unknown[] }).errors ?? []) as Array<{ message?: string } | string>;
+      const messages = errs
+        .map((e) => (typeof e === "string" ? e : (e as { message?: string }).message ?? ""))
+        .filter((s) => s.length > 4);
+
+      if (messages.length === 0) {
+        reportedRef.current = false;
+        return;
+      }
+      const now = Date.now();
+      // Fire immediately, or re-fire if it's been >30 s (allows retry after a failed fix).
+      if (!reportedRef.current || now - lastReportTimeRef.current > 30_000) {
+        reportedRef.current = true;
+        lastReportTimeRef.current = now;
+        onErrors(messages);
+      }
+    } catch { /* never crash the preview */ }
   }, [(sandpack as unknown as { errors?: unknown[] }).errors, onErrors]);
 
-  // Fallback: listen to message bus for any error events
+  // Fallback: message bus — only real bundler events, NOT console.error/warn
+  // (those are shown in SandpackConsole and don't represent fixable compile errors).
   useEffect(() => {
     const unsub = listen((msg: Record<string, unknown>) => {
-      const isErr =
-        (msg["type"] === "action" && msg["action"] === "show-error") ||
-        msg["type"] === "compile-error" ||
-        msg["type"] === "module-error" ||
-        (msg["type"] === "done" && msg["compilatonError"] === true) ||
-        (msg["type"] === "console" && (msg["method"] === "error" || msg["method"] === "warn"));
-      if (!isErr) return;
-      // For console messages, extract the log data array
-      const logData = Array.isArray(msg["data"])
-        ? (msg["data"] as unknown[]).map(String).join(" ")
-        : null;
-      const text = logData ?? [msg["title"] ?? msg["name"], msg["message"]].filter(Boolean).join(": ");
-      if (text) accRef.current.push(String(text));
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => {
-        if (accRef.current.length > 0 && !reportedRef.current) {
-          reportedRef.current = true;
-          onErrors([...accRef.current]);
-        }
-        accRef.current = [];
-      }, 2000);
+      try {
+        const isBundlerErr =
+          (msg["type"] === "action" && msg["action"] === "show-error") ||
+          msg["type"] === "compile-error" ||
+          msg["type"] === "module-error" ||
+          (msg["type"] === "done" &&
+            (msg["compilatonError"] === true || msg["compileError"] === true));
+        if (!isBundlerErr) return;
+
+        const text = [msg["title"] ?? msg["name"], msg["message"]]
+          .filter(Boolean)
+          .join(": ")
+          .trim();
+        if (text.length > 4) accRef.current.push(text);
+
+        if (timerRef.current) clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => {
+          if (accRef.current.length > 0) {
+            const now = Date.now();
+            if (!reportedRef.current || now - lastReportTimeRef.current > 30_000) {
+              reportedRef.current = true;
+              lastReportTimeRef.current = now;
+              onErrors([...accRef.current]);
+            }
+            accRef.current = [];
+          }
+        }, 1500);
+      } catch { /* ignore */ }
     });
     return () => { unsub(); if (timerRef.current) clearTimeout(timerRef.current); };
   }, [listen, onErrors]);
@@ -1627,9 +1651,10 @@ function AgentWorkspaceMissionBody({
   };
 
   const handlePreviewAutoFix = useCallback(async (errors: string[]) => {
-    const MAX_ATTEMPTS = 3;
+    const MAX_ATTEMPTS = 5;
     if (previewAutoFixAttemptsRef.current >= MAX_ATTEMPTS) return;
     previewAutoFixAttemptsRef.current += 1;
+    const attempt = previewAutoFixAttemptsRef.current;
 
     const devAgentId =
       resolveAgentId("Development") ??
@@ -1638,22 +1663,96 @@ function AgentWorkspaceMissionBody({
     if (!devAgentId) { toast.error("No agent available to auto-fix preview"); return; }
 
     setPreviewAutoFixing(true);
-    const errText = errors.slice(0, 5).join("\n");
+
+    // Extract file paths mentioned in the errors (e.g. /src/main.tsx → look up in artifacts)
+    const errorPaths = new Set<string>();
+    for (const e of errors) {
+      const hits = e.match(/\/([\w/-]+\.(tsx?|jsx?|css|json))/g);
+      if (hits) hits.forEach((p) => errorPaths.add(p));
+    }
+
+    // Inline the relevant files so the agent can see exactly what needs fixing.
+    // Falls back to all frontend files if we couldn't parse specific paths.
+    const deduped = dedupeArtifactsByPath(artifacts);
+    const frontendFiles = deduped.filter(
+      (a) => a.kind === "file" && (a.path.startsWith("frontend/") || a.path.startsWith("src/")),
+    );
+    const relevant = frontendFiles
+      .filter((a) => {
+        if (errorPaths.size === 0) return true;
+        const rel = "/" + a.path.replace(/^frontend\//, "");
+        return [...errorPaths].some((ep) => rel.includes(ep) || ep.includes(rel.replace(/^\//, "")));
+      })
+      .slice(0, 6);
+    // Always include the entry-point candidates so the agent has the full picture.
+    const entryKeys = ["/src/main.tsx", "/src/App.tsx", "/src/index.tsx"];
+    for (const a of frontendFiles) {
+      const rel = "/" + a.path.replace(/^frontend\//, "");
+      if (entryKeys.includes(rel) && !relevant.includes(a)) relevant.push(a);
+    }
+
+    const fileBlock = relevant
+      .map((a) => {
+        const rel = a.path.replace(/^frontend\//, "");
+        const lang = rel.endsWith(".tsx") ? "tsx" : rel.endsWith(".ts") ? "ts" : rel.endsWith(".css") ? "css" : "js";
+        const body = a.content.length > 5_000 ? a.content.slice(0, 5_000) + "\n// …[truncated]" : a.content;
+        return `#### ${rel}\n\`\`\`${lang}\n${body}\n\`\`\``;
+      })
+      .join("\n\n");
+
+    const errText = errors.slice(0, 4).join("\n");
+
+    const message = `\
+SANDPACK REACT PREVIEW ERROR — auto-fix attempt ${attempt} of ${MAX_ATTEMPTS}
+
+## Error(s)
+\`\`\`
+${errText}
+\`\`\`
+
+## Current source files
+${fileBlock || "(no frontend files found — regenerate from scratch)"}
+
+## Your task
+Fix the error(s) above by editing the source files.
+Common causes: wrong import/export (default vs named), missing component export, bad relative path, broken JSX.
+Output every changed file in full — no truncation, no "..." placeholders.
+
+## MANDATORY RESPONSE FORMAT
+You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose outside the JSON.
+{
+  "assistantReply": "one-sentence explanation of what you fixed",
+  "fileUpdates": [
+    { "path": "frontend/src/App.tsx", "language": "tsx", "content": "COMPLETE file contents here" }
+  ]
+}`;
+
+    toast.info(`Auto-fixing preview (attempt ${attempt}/${MAX_ATTEMPTS})…`, { duration: 3000 });
+
     const result = await invokeAgentApi(devAgentId, {
-      message: `The in-browser React preview has these build/runtime errors:\n\n${errText}\n\nFix the affected source files so the preview renders without errors. Focus on TypeScript errors, missing imports, module resolution, and JSX issues. Return updated file contents.`,
+      message,
       missionId: mission.id,
       persistArtifactUpdates: true,
-      includeArtifacts: true,
+      includeArtifacts: false, // we already inlined the files above
     });
 
-    if (result.ok && !result.persistArtifactParseFailed) {
-      const fresh = await fetchMissionArtifactsApi(mission.id);
-      if (fresh) {
-        setArtifacts(fresh);
-        toast.success("Preview auto-fixed", { duration: 3000 });
+    if (result.ok) {
+      if (!result.persistArtifactParseFailed && result.artifactPathsApplied?.length) {
+        const fresh = await fetchMissionArtifactsApi(mission.id);
+        if (fresh) {
+          setArtifacts(fresh);
+          previewAutoFixAttemptsRef.current = 0; // reset on success so future errors get 5 fresh tries
+          toast.success(`Preview fixed — updated: ${result.artifactPathsApplied.join(", ")}`, { duration: 4000 });
+        }
+      } else if (result.persistArtifactParseFailed) {
+        // Agent replied but JSON was malformed — the 30-s re-fire window in SandpackErrorMonitor
+        // will trigger another attempt automatically.
+        toast.warning(`Auto-fix attempt ${attempt}: response wasn't valid JSON, retrying…`, { duration: 3500 });
+      } else {
+        toast.warning(`Auto-fix attempt ${attempt}: agent responded with no file changes`, { duration: 3500 });
       }
     } else {
-      toast.error("Auto-fix did not produce usable patches — check artifacts manually");
+      toast.error(`Auto-fix attempt ${attempt} failed (${result.reason}) — will retry`);
     }
     setPreviewAutoFixing(false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1926,6 +2025,7 @@ function AgentWorkspaceMissionBody({
   const sendMessage = () => {
     if (!draft.trim() || isSendingRef.current) return;
     isSendingRef.current = true;
+    previewAutoFixAttemptsRef.current = 0; // new message → fresh auto-fix budget
     const text = draft.trim();
     const ts = new Date().toLocaleTimeString("en-US", { hour12: false });
     setDraft("");
@@ -2285,7 +2385,10 @@ function AgentWorkspaceMissionBody({
                         </button>
                         <button
                           type="button"
-                          onClick={() => setWorkspacePanelTab("preview")}
+                          onClick={() => {
+                            setWorkspacePanelTab("preview");
+                            previewAutoFixAttemptsRef.current = 0; // fresh budget when user re-opens preview
+                          }}
                           className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-[11px] font-medium transition ${
                             workspacePanelTab === "preview"
                               ? "bg-cyan-300/20 text-cyan-200"
