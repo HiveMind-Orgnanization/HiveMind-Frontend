@@ -410,41 +410,73 @@ export function previewAbsoluteUrl(previewPath: string): string {
   return `${base.replace(/\/$/, "")}${p}`;
 }
 
+/**
+ * Start a hosted preview build. POSTs to the async /preview/start endpoint, which returns
+ * 202 + jobId immediately, then polls /preview/status/:jobId. The synchronous path was
+ * killed by Vercel's 30 s rewrite timeout long before vite build could finish.
+ */
 export async function startMissionPreview(missionId: string): Promise<{ ok: boolean; url?: string; message?: string }> {
   if (!apiConfigured()) return { ok: false, message: "API is disabled in this build." };
   if (!getAuthToken()) return { ok: false, message: "Sign in with your wallet to start a preview." };
   try {
-    const r = await apiFetch(`/api/missions/${encodeURIComponent(missionId)}/preview/start`, {
+    // 1) Kick off the async build.
+    const start = await apiFetch(`/api/missions/${encodeURIComponent(missionId)}/preview/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
-      // Hosted preview runs npm install + vite build on the server (often 2–15+ minutes on EB).
-      signal: typeof AbortSignal !== "undefined" && "timeout" in AbortSignal ? AbortSignal.timeout(960_000) : undefined,
     });
-    const j = (await r.json().catch(() => ({}))) as {
+    const startJson = (await start.json().catch(() => ({}))) as {
       ok?: boolean;
+      jobId?: string;
       url?: string;
-      sessionId?: string;
       error?: string;
       message?: string;
     };
-    if (!r.ok) {
+    if (!start.ok && start.status !== 202) {
       const detail =
-        typeof j.message === "string" && j.message.trim().length > 0
-          ? j.message.trim()
-          : typeof j.error === "string"
-            ? j.error
-            : "";
-      const msg =
-        detail ||
-        (r.status === 502 || r.status === 504
-          ? "Preview timed out or failed while building (try again in a minute)."
-          : `Preview failed (${r.status}).`);
-      return { ok: false, message: msg };
+        (typeof startJson.message === "string" && startJson.message.trim())
+        || (typeof startJson.error === "string" && startJson.error)
+        || "";
+      return { ok: false, message: detail || `Preview failed (${start.status}).` };
     }
-    const path = typeof j.url === "string" ? j.url : "";
-    if (!path) return { ok: false, message: "Preview started but no URL returned." };
-    return { ok: true, url: previewAbsoluteUrl(path) };
+    // Legacy sync response (older backend pre-async deploy): { ok, url }.
+    if (startJson.url && !startJson.jobId) {
+      return { ok: true, url: previewAbsoluteUrl(startJson.url) };
+    }
+    if (!startJson.jobId) return { ok: false, message: "Preview started but no job id returned." };
+
+    // 2) Poll status until the build completes (or fails).
+    const statusPath = `/api/missions/${encodeURIComponent(missionId)}/preview/status/${encodeURIComponent(startJson.jobId)}`;
+    const POLL_FAST_MS = 2000;
+    const POLL_SLOW_MS = 5000;
+    const BUDGET_MS = 10 * 60_000;
+    let elapsed = 0;
+    let i = 0;
+    while (elapsed < BUDGET_MS) {
+      const wait = i < 8 ? POLL_FAST_MS : POLL_SLOW_MS;
+      await new Promise<void>((r) => setTimeout(r, wait));
+      elapsed += wait;
+      i += 1;
+      const poll = await apiFetch(statusPath);
+      if (!poll.ok) {
+        if (poll.status === 401) return { ok: false, message: "Sign in expired during build. Sign in and try again." };
+        // Transient — keep polling.
+        continue;
+      }
+      const s = (await poll.json().catch(() => ({}))) as {
+        status?: "running" | "done" | "failed";
+        url?: string | null;
+        error?: string | null;
+      };
+      if (s.status === "running") continue;
+      if (s.status === "failed") {
+        return { ok: false, message: s.error || "Preview build failed on the server." };
+      }
+      if (s.status === "done" && s.url) {
+        return { ok: true, url: previewAbsoluteUrl(s.url) };
+      }
+    }
+    return { ok: false, message: "Preview build took longer than 10 minutes — try again later." };
   } catch {
     return { ok: false, message: "Could not start preview — check your connection." };
   }
