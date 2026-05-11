@@ -41,7 +41,7 @@ import {
 import { useAgents, useTasks, useHiveMindRealtime, useMemoryChunks } from "./hooks/useHiveMind";
 import { AgentMessageMarkdown } from "./components/agent-message-markdown";
 import { buildArtifactTree, dedupeArtifactsByPath, type ArtifactTreeNode } from "../lib/artifact-tree";
-import { SandpackProvider, SandpackPreview as SandpackFrame, SandpackConsole, useSandpack } from "@codesandbox/sandpack-react";
+import { SandpackProvider, SandpackPreview as SandpackFrame, useSandpack } from "@codesandbox/sandpack-react";
 
 // All agent invocations always use GPT-5 for best results.
 const AGENT_MODEL = "gpt-5.5-long-context";
@@ -1314,14 +1314,40 @@ function safeStringify(v: unknown): string {
 function SandpackLivePreview({
   artifacts,
   autoFixing,
+  swarmRunning,
   onErrors,
 }: {
   artifacts: MissionArtifact[];
   autoFixing: boolean;
+  swarmRunning: boolean;
   onErrors: (errs: string[]) => void;
 }) {
   const { files, dependencies, entry } = useMemo(() => buildSandpackFiles(artifacts), [artifacts]);
   const hasFiles = Object.keys(files).length > 0;
+  // A real, user-meaningful app needs at least an App/main entry from the agent — not just
+  // the synthesized base CSS + stub entry. Count only artifact-derived source files.
+  const hasGeneratedAppCode = useMemo(() => {
+    const deduped = dedupeArtifactsByPath(artifacts);
+    return deduped.some((a) => {
+      const p = a.path.toLowerCase();
+      if (!p.startsWith("frontend/")) return false;
+      return /\.(tsx|jsx|ts|js)$/.test(p) && !p.endsWith("vite-env.d.ts");
+    });
+  }, [artifacts]);
+
+  // Capture errors here too so we can render a friendly overlay (raw error text is hidden from users).
+  const [hasFatalError, setHasFatalError] = useState(false);
+  const handleInternalErrors = useCallback(
+    (errs: string[]) => {
+      setHasFatalError(true);
+      onErrors(errs);
+    },
+    [onErrors],
+  );
+  // Reset error state whenever a fresh artifact set arrives (swarm produced new code).
+  useEffect(() => {
+    setHasFatalError(false);
+  }, [artifacts]);
 
   // Stable key — changes only when artifact set grows/changes, forcing re-bundle
   const sandpackKey = useMemo(() => {
@@ -1358,14 +1384,30 @@ function SandpackLivePreview({
     };
   }, []);
 
-  if (!hasFiles) {
+  // "Generating" overlay: shown while the swarm is still producing code OR has finished
+  // but hasn't emitted real frontend source yet. Avoid flashing the Sandpack default
+  // "Hello world" stub while the agents are still working.
+  const showGenerating = !hasGeneratedAppCode && (swarmRunning || !hasFiles);
+  if (showGenerating) {
     return (
-      <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-dashed border-white/[0.14] bg-gradient-to-b from-black/25 to-transparent">
-        <WorkspacePanelEmptyState
-          icon={Sparkles}
-          title="Preview ready"
-          description="Run the swarm to generate your app — the live preview will appear here instantly with no build step."
-        />
+      <div
+        ref={containerRef}
+        className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 rounded-xl border border-white/[0.08] bg-gradient-to-b from-[#0a1320]/70 via-[#070b14]/80 to-[#040810]/70 p-8 text-center"
+      >
+        <div className="relative">
+          <div className="absolute inset-0 animate-pulse rounded-full bg-cyan-400/20 blur-xl" aria-hidden />
+          <div className="relative flex h-14 w-14 items-center justify-center rounded-full border border-cyan-300/30 bg-cyan-500/10">
+            <Loader2 className="h-7 w-7 animate-spin text-cyan-300" aria-hidden />
+          </div>
+        </div>
+        <div className="space-y-1">
+          <div className="text-sm font-medium text-white/95">
+            {swarmRunning ? "Building your preview…" : "Waiting for the swarm to start…"}
+          </div>
+          <div className="max-w-sm text-xs text-white/55">
+            The agents are writing your app. The preview will appear here automatically once the code is ready.
+          </div>
+        </div>
       </div>
     );
   }
@@ -1375,11 +1417,11 @@ function SandpackLivePreview({
       {autoFixing && (
         <div className="flex items-center gap-2 border-b border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5 text-[11px] text-cyan-300">
           <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
-          AI is auto-fixing preview errors…
+          Polishing the preview… the agent is fixing an issue.
         </div>
       )}
       {/* This div is the height source — ResizeObserver reads its real pixel height */}
-      <div ref={containerRef} style={{ flex: 1, minHeight: 0 }}>
+      <div ref={containerRef} style={{ flex: 1, minHeight: 0 }} className="relative">
         <SandpackProvider
           key={sandpackKey}
           template="react-ts"
@@ -1388,18 +1430,26 @@ function SandpackLivePreview({
           options={{ externalResources: ["https://cdn.tailwindcss.com"] }}
           theme="dark"
         >
-          <SandpackErrorMonitor onErrors={onErrors} />
-          {/* Pass measured pixel height — Sandpack ignores flex/% heights */}
+          <SandpackErrorMonitor onErrors={handleInternalErrors} />
           <SandpackFrame
             showOpenInCodeSandbox={false}
             showRefreshButton
-            style={{ width: "100%", height: `${Math.max(200, frameHeight - 120)}px` }}
-          />
-          <SandpackConsole
-            showSyntaxError
-            style={{ height: "120px", borderTop: "1px solid rgba(255,255,255,0.07)" }}
+            style={{ width: "100%", height: `${Math.max(200, frameHeight - 24)}px` }}
           />
         </SandpackProvider>
+        {hasFatalError && !autoFixing && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center px-4 pb-4">
+            <div className="pointer-events-auto flex max-w-md items-start gap-3 rounded-xl border border-amber-300/30 bg-[#1a1407]/90 px-4 py-3 text-xs text-amber-100/90 shadow-lg backdrop-blur">
+              <Sparkles className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-300" aria-hidden />
+              <div className="space-y-1">
+                <div className="font-medium text-amber-100">Preview hit a snag</div>
+                <div className="text-amber-100/70">
+                  The agents are looking at it now. If it doesn’t recover in a moment, try sending a follow-up message in chat.
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1459,6 +1509,13 @@ function AgentWorkspaceMissionBody({
 
   const artifactTree = useMemo(() => buildArtifactTree(artifacts), [artifacts]);
   const uniqueArtifactPaths = useMemo(() => dedupeArtifactsByPath(artifacts).length, [artifacts]);
+  /** True whenever the swarm or any in-flight agent invoke is producing code — drives the preview "Building…" overlay. */
+  const swarmRunning = useMemo(
+    () =>
+      autoInvoking ||
+      messages.some((m) => m.state === "thinking" || m.state === "delegating" || m.state === "executing"),
+    [autoInvoking, messages],
+  );
 
   const loadHostedPreview = useCallback(
     async (opts?: { quiet?: boolean }) => {
@@ -2822,6 +2879,7 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                     <SandpackLivePreview
                       artifacts={artifacts}
                       autoFixing={previewAutoFixing}
+                      swarmRunning={swarmRunning}
                       onErrors={handlePreviewAutoFix}
                     />
                   </div>
