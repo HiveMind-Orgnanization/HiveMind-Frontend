@@ -14,7 +14,7 @@ import { Particles } from "./components/particles";
 import { TrialBanner } from "./components/TrialBanner";
 import { WalletGate } from "./components/WalletGate";
 import { useMissions } from "./store";
-import { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { toast } from "sonner";
 import { apiConfigured, swarmRunMissionApi } from "../lib/api";
 import { labelForModel, resolveAgentModelId } from "../lib/agent-models";
@@ -32,13 +32,18 @@ const AGENT_UI_COLORS: Record<string, string> = {
   Memory: "#f59e0b",
 };
 
-function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return (
-    <div className={`relative overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.03] to-transparent backdrop-blur-xl ${className}`}>
+const Card = React.forwardRef<HTMLDivElement, { children: React.ReactNode; className?: string; style?: React.CSSProperties }>(
+  ({ children, className = "", style }, ref) => (
+    <div
+      ref={ref}
+      style={style}
+      className={`relative overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.03] to-transparent backdrop-blur-xl ${className}`}
+    >
       {children}
     </div>
-  );
-}
+  ),
+);
+Card.displayName = "Card";
 
 function Sparkline({ color = "#22d3ee" }: { color?: string }) {
   const points = "0,28 14,22 28,26 42,16 56,20 70,10 84,16 100,8";
@@ -64,6 +69,25 @@ export default function Dashboard() {
   const paused = active?.status === "paused";
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [accelerating, setAccelerating] = useState(false);
+  // Measure Mission Analytics height with ResizeObserver and apply it as max-height on
+  // Agent Status, so a long agent roster scrolls inside its card instead of growing
+  // the row taller than the analytics sibling. CSS grid stretch alone can't do this —
+  // the row always sizes to the TALLER child.
+  const analyticsRef = useRef<HTMLDivElement | null>(null);
+  const [analyticsH, setAnalyticsH] = useState<number | null>(null);
+  useEffect(() => {
+    const el = analyticsRef.current;
+    if (!el) return;
+    const measure = () => setAnalyticsH(el.offsetHeight);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
   const { agents: apiAgents } = useAgents();
   const { tasks: apiTasks } = useTasks(active?.id ?? null);
   const { metrics: liveMetrics, loading: liveMetricsLoading } = useMissionLiveMetrics(active?.id);
@@ -681,12 +705,12 @@ export default function Dashboard() {
               </div>
             </Card>
 
-            {/* analytics + agent grid. xl:items-stretch + xl:auto-rows-fr makes both cards share
-                the row height (Mission Analytics defines it via natural content); Agent Status
-                then scrolls internally instead of overflowing the row. */}
-            <div className="mb-6 grid gap-6 xl:grid-cols-3 xl:items-stretch">
+            {/* analytics + agent grid. analyticsRef measures Mission Analytics' rendered height
+                and we mirror it onto Agent Status as max-height, so the agent list scrolls
+                inside its card instead of stretching the row taller than the analytics card. */}
+            <div className="mb-6 grid gap-6 xl:grid-cols-3 xl:items-start">
               {/* analytics */}
-              <Card className="xl:col-span-2">
+              <Card ref={analyticsRef} className="xl:col-span-2">
                 <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
                   <div className="flex items-center gap-2 text-sm">
                     <TrendingUp className="h-4 w-4 text-cyan-300" />
@@ -751,10 +775,13 @@ export default function Dashboard() {
                 </div>
               </Card>
 
-              {/* agent status grid — flex column so the inner list can take the remaining grid-cell
-                  height. min-h-0 on the scroller is the standard fix for flex-1 + overflow inside
-                  a flex parent. */}
-              <Card className="flex h-full max-h-full min-h-0 flex-col">
+              {/* agent status grid — height mirrors Mission Analytics so the list scrolls inside
+                  the card. min-h-0 on the scroller is the standard fix for flex-1 + overflow
+                  inside a flex parent. */}
+              <Card
+                className="flex flex-col"
+                style={analyticsH ? { maxHeight: analyticsH } : undefined}
+              >
                 <div className="flex shrink-0 items-center justify-between border-b border-white/5 px-5 py-3">
                   <div className="flex items-center gap-2 text-sm">
                     <Cpu className="h-4 w-4 text-cyan-300" />
