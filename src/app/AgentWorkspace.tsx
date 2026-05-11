@@ -1636,6 +1636,23 @@ function AgentWorkspaceMissionBody({
   const [workspacePanelTab, setWorkspacePanelTab] = useState<"code" | "preview">("code");
   const [previewEmbedUrl, setPreviewEmbedUrl] = useState<string | null>(null);
   const [activityDrawerOpen, setActivityDrawerOpen] = useState(false);
+  /**
+   * Workspace layout — controls which panel(s) are visible.
+   *   "split"     — chat (30%) + code/preview (70%), default
+   *   "chat-only" — full-width chat (good for long agent conversations)
+   *   "work-only" — full-width code/preview (good for testing the generated app)
+   * Persisted to localStorage so it survives page reloads.
+   */
+  type WorkspaceLayout = "split" | "chat-only" | "work-only";
+  const [workspaceLayout, setWorkspaceLayoutState] = useState<WorkspaceLayout>(() => {
+    if (typeof window === "undefined") return "split";
+    const saved = window.localStorage.getItem("hivemind:workspace-layout");
+    return saved === "chat-only" || saved === "work-only" ? saved : "split";
+  });
+  const setWorkspaceLayout = useCallback((next: WorkspaceLayout) => {
+    setWorkspaceLayoutState(next);
+    try { window.localStorage.setItem("hivemind:workspace-layout", next); } catch { /* ignore */ }
+  }, []);
   /** False until server workspace merge finishes — avoids PUT-ing an empty snapshot before GET returns. */
   const [workspaceMergeDone, setWorkspaceMergeDone] = useState(false);
   /** Live "Thinking…" indicator for the agent currently working (driven by [work] events). */
@@ -2961,10 +2978,51 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
           <Particles count={22} />
 
           <div className="relative flex min-h-0 flex-1 flex-col px-4 py-3">
+            {/* Layout toggle — choose chat-only, split, or work-only view of the workspace.
+                Always rendered (independent of which panel is visible) so the user can switch
+                back from a single-panel mode. */}
+            <div className="mb-2 flex items-center justify-end">
+              <div
+                role="radiogroup"
+                aria-label="Workspace layout"
+                className="flex items-center gap-0.5 rounded-lg border border-white/10 bg-black/40 p-0.5"
+              >
+                {([
+                  { id: "chat-only" as const, icon: MessageSquare, label: "Chat only" },
+                  { id: "split" as const, icon: LayoutPanelLeft, label: "Split view" },
+                  { id: "work-only" as const, icon: Code2, label: "Code only" },
+                ] as const).map(({ id, icon: Icon, label }) => {
+                  const active = workspaceLayout === id;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      title={label}
+                      onClick={() => setWorkspaceLayout(id)}
+                      className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-medium transition ${
+                        active
+                          ? "bg-cyan-500/15 text-cyan-200 ring-1 ring-cyan-300/30"
+                          : "text-white/55 hover:bg-white/[0.04] hover:text-white/85"
+                      }`}
+                    >
+                      <Icon className="h-3.5 w-3.5" aria-hidden />
+                      <span className="hidden sm:inline">{label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
             {/* 30% communication · 70% code + live preview — fills full viewport under TopNav */}
             <div className="flex min-h-0 flex-1 flex-col gap-3 xl:flex-row xl:items-stretch">
-              {/* ── Agent Communication panel (30%) ── */}
-              <div className="flex min-h-0 w-full flex-1 flex-col xl:flex-none xl:w-[30%] xl:max-w-md">
+              {/* ── Agent Communication panel — hidden in work-only mode ── */}
+              {workspaceLayout !== "work-only" && (
+              <div className={`flex min-h-0 w-full flex-1 flex-col ${
+                workspaceLayout === "chat-only"
+                  ? ""
+                  : "xl:flex-none xl:w-[30%] xl:max-w-md"
+              }`}>
                 <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
 
                   {/* Active agent banner — only shown while swarm is running */}
@@ -3049,8 +3107,10 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                   </div>
                 </Card>
               </div>
+              )}
 
-              {/* ~70% — source + live hosted preview */}
+              {/* ~70% — source + live hosted preview — hidden in chat-only mode */}
+              {workspaceLayout !== "chat-only" && (
               <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                 <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
                   <div className="flex flex-wrap items-center gap-2 border-b border-white/5 px-4 py-3">
@@ -3302,6 +3362,7 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                   )}
                 </Card>
               </div>
+              )}
             </div>
 
             <AnimatePresence>
