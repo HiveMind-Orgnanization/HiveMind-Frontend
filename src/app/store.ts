@@ -46,7 +46,12 @@ export type Mission = {
   config?: MissionConfig;
 };
 
-const KEY = "hm-missions";
+/** Per-wallet localStorage key — missions from different wallets must not co-mingle.
+ *  Use a placeholder when no wallet is connected so we never write into a "global" bucket. */
+const LEGACY_KEY = "hm-missions";
+function missionsKey(walletPk: string | null): string {
+  return walletPk ? `hm-missions:${walletPk}` : "hm-missions:guest";
+}
 
 const seed: Mission[] = [
   {
@@ -66,10 +71,10 @@ const seed: Mission[] = [
   },
 ];
 
-function read(): Mission[] {
+function read(walletPk: string | null): Mission[] {
   if (typeof window === "undefined") return [];
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = localStorage.getItem(missionsKey(walletPk));
     if (!raw) return [];
     return JSON.parse(raw);
   } catch {
@@ -77,9 +82,15 @@ function read(): Mission[] {
   }
 }
 
-function write(list: Mission[]) {
-  localStorage.setItem(KEY, JSON.stringify(list));
+function write(walletPk: string | null, list: Mission[]) {
+  localStorage.setItem(missionsKey(walletPk), JSON.stringify(list));
   window.dispatchEvent(new CustomEvent("hm-missions-updated"));
+}
+
+/** One-time cleanup: nuke the pre-fix `hm-missions` global key so it can't leak across wallets. */
+function purgeLegacyMissionsKey() {
+  if (typeof window === "undefined") return;
+  try { localStorage.removeItem(LEGACY_KEY); } catch { /* ignore */ }
 }
 
 /** Union server + local-only missions (same id → prefer server row). */
@@ -98,40 +109,45 @@ export function useMissions() {
 
   const [missions, setMissions] = useState<Mission[]>([]);
 
-  // Clear missions immediately when wallet disconnects; reload when it connects
+  // One-time: drop the legacy global "hm-missions" key (pre per-wallet scoping) so it can't
+  // leak across wallets on this device.
+  useEffect(() => { purgeLegacyMissionsKey(); }, []);
+
+  // Clear missions immediately when wallet disconnects; reload when it connects.
+  // read() is now scoped by walletPk so different wallets can't see each other's cache.
   useEffect(() => {
-    if (!connected) {
+    if (!connected || !walletPk) {
       setMissions([]);
     } else {
-      setMissions(read());
+      setMissions(read(walletPk));
     }
   }, [connected, walletPk]);
 
   useEffect(() => {
-    if (!connected) return;
-    const sync = () => setMissions(read());
+    if (!connected || !walletPk) return;
+    const sync = () => setMissions(read(walletPk));
     window.addEventListener("hm-missions-updated", sync);
     window.addEventListener("storage", sync);
     return () => {
       window.removeEventListener("hm-missions-updated", sync);
       window.removeEventListener("storage", sync);
     };
-  }, [connected]);
+  }, [connected, walletPk]);
 
   useEffect(() => {
-    if (!connected) return;
+    if (!connected || !walletPk) return;
     let cancelled = false;
     const seedIds = new Set(seed.map((s) => s.id));
     const pull = async () => {
       const remote = await fetchMissionsApi();
       if (cancelled || remote === null) return;
-      const local = read();
+      const local = read(walletPk);
       if (remote.length === 0) {
-        // Server has no missions for this wallet — remove any auto-seeded demo missions
-        // but preserve any user-created local missions (ids not in the seed set).
-        write(local.filter((m) => !seedIds.has(m.id)));
+        // Server has no missions for this wallet — keep only user-created local missions
+        // that haven't been seeded as demos.
+        write(walletPk, local.filter((m) => !seedIds.has(m.id)));
       } else {
-        write(mergeRemoteWithLocal(remote, local));
+        write(walletPk, mergeRemoteWithLocal(remote, local));
       }
       window.dispatchEvent(new CustomEvent("hm-missions-updated"));
     };
@@ -142,11 +158,11 @@ export function useMissions() {
       cancelled = true;
       window.removeEventListener("hm-session-changed", onSession);
     };
-  }, [connected]);
+  }, [connected, walletPk]);
 
   const create = useCallback(
     async (m: CreateMissionPayload) => {
-      const list = read();
+      const list = read(walletPk);
       const localId = `M-${Math.floor(248 + Math.random() * 750)}`;
       const payload: CreateMissionPayload = {
         ...m,
@@ -177,30 +193,30 @@ export function useMissions() {
       }
 
       const updated = [next, ...list.filter((x) => x.id !== next.id)];
-      write(updated);
+      write(walletPk, updated);
       return next;
     },
-    [],
+    [walletPk],
   );
 
   const remove = useCallback(async (id: string) => {
     void deleteMissionApi(id);
-    write(read().filter((m) => m.id !== id));
-  }, []);
+    write(walletPk, read(walletPk).filter((m) => m.id !== id));
+  }, [walletPk]);
 
   const reset = useCallback(() => {
-    localStorage.removeItem(KEY);
-    write(seed);
-  }, []);
+    localStorage.removeItem(missionsKey(walletPk));
+    write(walletPk, seed);
+  }, [walletPk]);
 
   const clear = useCallback(() => {
-    write([]);
-  }, []);
+    write(walletPk, []);
+  }, [walletPk]);
 
   const patchLocal = useCallback((id: string, patch: Partial<Mission>) => {
-    const list = read().map((x) => (x.id === id ? { ...x, ...patch } : x));
-    write(list);
-  }, []);
+    const list = read(walletPk).map((x) => (x.id === id ? { ...x, ...patch } : x));
+    write(walletPk, list);
+  }, [walletPk]);
 
   return { missions, create, remove, reset, clear, patchLocal, walletConnected: connected };
 }
