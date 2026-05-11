@@ -494,8 +494,8 @@ export default function MissionCreate() {
         if (escrowPct < 15) issues.push(`Escrow only ${escrowPct.toFixed(0)}% — bump to ≥20% so a stuck agent doesn't drain compute.`);
         else wins.push(`Escrow ${escrowPct.toFixed(0)}% provides solid retry runway`);
 
-        // 4. Deadline reachability.
-        const deadlineMs = new Date(deadline).getTime();
+        // 4. Deadline reachability — `deadlineLocal` is a datetime-local string ("YYYY-MM-DDTHH:mm").
+        const deadlineMs = deadlineLocal.trim() ? new Date(deadlineLocal).getTime() : NaN;
         if (Number.isFinite(deadlineMs)) {
           const hoursLeft = Math.round((deadlineMs - Date.now()) / 3_600_000);
           const etaHours = Math.max(1, Math.round(8 - selected.length * 0.6));

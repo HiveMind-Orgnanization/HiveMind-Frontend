@@ -322,14 +322,18 @@ export function CoordGraph(props: CoordGraphProps = {}) {
       <div className="pointer-events-none absolute right-16 top-3 text-[10px] tabular-nums text-white/40">
         sync 99.8% · 12ms
       </div>
-      <div className="pointer-events-none absolute left-3 bottom-3 text-[10px] tabular-nums text-white/40">
-        msgs/s {Math.round(140 + visibleAgents.length * 22)} · agents {visibleAgents.length}/{GRAPH_NODES.length}
-      </div>
-      <div className="pointer-events-none absolute left-1/2 bottom-3 flex -translate-x-1/2 items-center gap-1.5 text-[9px] uppercase tracking-[0.25em] text-white/30">
-        <Move className="h-3 w-3" /> drag · scroll to zoom
-      </div>
-      <div className="pointer-events-none absolute right-3 bottom-3 text-[10px] uppercase tracking-[0.3em] text-purple-300/60">
-        graph.v7 ◣
+      {/* Footer: single flex row so the three pieces never overlap. The drag hint hides on
+          narrow widths (md and below) where it would otherwise collide with the numbers. */}
+      <div className="pointer-events-none absolute inset-x-3 bottom-3 flex items-center justify-between gap-3 text-[10px] tabular-nums text-white/40">
+        <span className="whitespace-nowrap">
+          msgs/s {Math.round(140 + visibleAgents.length * 22)} · agents {visibleAgents.length}/{GRAPH_NODES.length}
+        </span>
+        <span className="hidden lg:inline-flex items-center gap-1.5 whitespace-nowrap text-[9px] uppercase tracking-[0.25em] text-white/30">
+          <Move className="h-3 w-3" /> drag · scroll to zoom
+        </span>
+        <span className="whitespace-nowrap uppercase tracking-[0.3em] text-purple-300/60">
+          graph.v7 ◣
+        </span>
       </div>
     </div>
   );
