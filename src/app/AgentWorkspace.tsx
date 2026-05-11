@@ -1779,6 +1779,24 @@ function AgentWorkspaceMissionBody({
     [mission.id],
   );
 
+  // Honour `?autoHost=1` from the expired-preview page once per session. The expired-preview
+  // HTML on the backend links here with that query when the user wants to rebuild a dead
+  // session — clicking the link should be enough; no further clicks required. Strip the
+  // param afterwards so a page reload doesn't keep re-firing the build.
+  const autoHostFiredRef = useRef(false);
+  useEffect(() => {
+    if (autoHostFiredRef.current) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("autoHost") !== "1") return;
+    if (!getAuthToken()) return; // wait for wallet sign-in
+    autoHostFiredRef.current = true;
+    // Remove ?autoHost so reloads don't loop.
+    params.delete("autoHost");
+    const next = `${window.location.pathname}${params.toString() ? "?" + params.toString() : ""}`;
+    window.history.replaceState(null, "", next);
+    void loadHostedPreview();
+  }, [mission.id, loadHostedPreview]);
+
   const toggleArtifactFolder = useCallback((fullPath: string) => {
     setCollapsedArtifactFolders((prev) => {
       const next = new Set(prev);
@@ -3637,6 +3655,18 @@ export default function AgentWorkspace() {
       window.removeEventListener("hm-missions-updated", sync);
     };
   }, []);
+
+  // The expired-preview page on the backend links here with `?mission=<id>&autoHost=1` so the
+  // user can rebuild a dead preview in one click. Pin the mission from the URL before computing
+  // `activeMission` so the right one is loaded immediately.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const m = params.get("mission");
+    if (m && missions.some((row) => row.id === m)) {
+      localStorage.setItem("hm-active-mission-id", m);
+      window.dispatchEvent(new Event("hm-active-mission-changed"));
+    }
+  }, [missions]);
 
   const activeMission =
     (pinnedId ? missions.find((m) => m.id === pinnedId) : null) ??
