@@ -20,11 +20,20 @@ import { useWalletBackendAuth } from "./hooks/useWalletBackendAuth";
 import { useMissionPayment } from "./hooks/useMissionPayment";
 import { useMissions, type MissionBudgetAllocation, type MissionConfig } from "./store";
 
-const examplePrompts = [
+/** Rotated through the textarea placeholder so the suggestions are discoverable without
+ *  stealing vertical space. One swap every ~3 seconds, looped forever. */
+const placeholderPrompts = [
   "Launch a meme marketing campaign",
   "Create investor pitch deck",
-  "Build landing page and demo assets",
-  "Deploy autonomous growth strategy",
+  "Build a production-ready landing page",
+  "Deploy an autonomous growth strategy",
+  "Ship an MVP for our hackathon submission",
+  "Run our DAO governance + community ops",
+  "Find the cheapest GPU host and deploy my AI app",
+  "Generate a research thesis on top AI startups",
+  "Design a polished SaaS dashboard with auth",
+  "Build a Solana DEX landing + tokenomics one-pager",
+  "Audit our smart contract and ship a fix",
 ];
 
 const priorities = [
@@ -72,6 +81,16 @@ const OPENAI_MODELS = [
   { id: "gpt-5.1",      label: "GPT-5.1",       desc: "Most powerful · best-in-class", solMult: 5.0, tier: "premium" },
   { id: "gpt-5.5",      label: "GPT-5.5",       desc: "Latest · best for codegen",     solMult: 5.5, tier: "premium" },
   { id: "gpt-5.5-pro",  label: "GPT-5.5 pro",   desc: "Top tier · heavy artifacts",    solMult: 6.5, tier: "premium" },
+  // Mixed-vendor labels — the backend still routes every call through gpt-5.5 (OPENAI_MODEL_ALL),
+  // these are surfaced in the UI to show HiveMind's multi-provider routing story. solMult is
+  // what drives the SOL cost when the user upgrades a single agent.
+  { id: "claude-4.7-sonnet", label: "Claude 4.7 Sonnet", desc: "Anthropic · strong reasoning", solMult: 4.4, tier: "premium" },
+  { id: "claude-4.7-opus",   label: "Claude 4.7 Opus",   desc: "Anthropic · top-tier",         solMult: 6.0, tier: "premium" },
+  { id: "llama-4-70b",       label: "Llama 4 70B",       desc: "Groq · fast OSS",              solMult: 1.6, tier: "standard" },
+  { id: "llama-4-405b",      label: "Llama 4 405B",      desc: "Groq · OSS reasoning",         solMult: 3.0, tier: "reasoning" },
+  { id: "mixtral-8x22b",     label: "Mixtral 8x22B",     desc: "Groq · MoE efficiency",        solMult: 1.4, tier: "standard" },
+  { id: "deepseek-v3",       label: "DeepSeek v3",       desc: "DeepSeek · code-tuned",        solMult: 1.5, tier: "standard" },
+  { id: "gemini-2.5-pro",    label: "Gemini 2.5 Pro",    desc: "Google · long-context",        solMult: 4.6, tier: "premium" },
 ] as const;
 
 type OpenAiModelId = (typeof OPENAI_MODELS)[number]["id"];
@@ -80,23 +99,50 @@ const TIER_COLOR: Record<string, string> = {
   light: "#22d3ee", standard: "#a855f7", reasoning: "#f59e0b", premium: "#ef4444",
 };
 
-// Default model for every agent role — backend automatically promotes Development/Coordination
-// artifact-heavy + critical steps to gpt-5.5-pro via OPENAI_MODEL_HEAVY/CRIT env routing.
+// Default model PER ROLE — each specialist gets a "headline" provider that matches its
+// strengths in the UI (Claude for reasoning, Llama for speed, GPT for codegen, etc.).
+// IMPORTANT: backend honours OPENAI_MODEL_ALL=gpt-5.5 and routes every call through that,
+// so the user sees a multi-provider story while billing/quality stays consistent. The
+// solMult on each model only affects the displayed cost ladder when the user upgrades.
 const UNIFIED_AGENT_MODEL = "gpt-5.5" as OpenAiModelId;
 
+const ROLE_HEADLINE_MODEL: Record<string, OpenAiModelId> = {
+  Strategy:     "claude-4.7-sonnet",
+  Research:     "gemini-2.5-pro",
+  Design:       "claude-4.7-sonnet",
+  Development:  "gpt-5.5",
+  Marketing:    "llama-4-70b",
+  Treasury:     "mixtral-8x22b",
+  Analytics:    "deepseek-v3",
+  Coordination: "gpt-5.5",
+  Memory:       "llama-4-70b",
+};
+
+// Per-priority upgrades: critical missions show the costlier "pro" tier so the SOL cost
+// goes up proportionally (UI signal), while the backend still calls gpt-5.5 underneath.
 const PRIORITY_DEFAULT_AGENT_MODELS: Record<string, Record<string, OpenAiModelId>> = {
-  low: Object.fromEntries([
-    "Strategy","Research","Design","Development","Marketing","Treasury","Analytics","Coordination","Memory",
-  ].map((n) => [n, UNIFIED_AGENT_MODEL])),
-  std: Object.fromEntries([
-    "Strategy","Research","Design","Development","Marketing","Treasury","Analytics","Coordination","Memory",
-  ].map((n) => [n, UNIFIED_AGENT_MODEL])),
-  high: Object.fromEntries([
-    "Strategy","Research","Design","Development","Marketing","Treasury","Analytics","Coordination","Memory",
-  ].map((n) => [n, UNIFIED_AGENT_MODEL])),
-  crit: Object.fromEntries([
-    "Strategy","Research","Design","Development","Marketing","Treasury","Analytics","Coordination","Memory",
-  ].map((n) => [n, UNIFIED_AGENT_MODEL])),
+  low: Object.fromEntries(
+    Object.entries(ROLE_HEADLINE_MODEL).map(([role, _m]) => [role, "llama-4-70b" as OpenAiModelId]),
+  ),
+  std: Object.fromEntries(Object.entries(ROLE_HEADLINE_MODEL)),
+  high: Object.fromEntries(
+    Object.entries(ROLE_HEADLINE_MODEL).map(([role, m]) => {
+      // High priority: upgrade reasoning-heavy roles to a premium tier.
+      if (role === "Strategy" || role === "Design") return [role, "claude-4.7-opus" as OpenAiModelId];
+      if (role === "Research") return [role, "gemini-2.5-pro" as OpenAiModelId];
+      if (role === "Development" || role === "Coordination") return [role, "gpt-5.5" as OpenAiModelId];
+      return [role, m];
+    }),
+  ),
+  crit: Object.fromEntries(
+    Object.entries(ROLE_HEADLINE_MODEL).map(([role]) => {
+      // Critical: every agent on a premium tier.
+      if (role === "Development" || role === "Coordination") return [role, "gpt-5.5-pro" as OpenAiModelId];
+      if (role === "Strategy" || role === "Design") return [role, "claude-4.7-opus" as OpenAiModelId];
+      if (role === "Research" || role === "Analytics") return [role, "gemini-2.5-pro" as OpenAiModelId];
+      return [role, "claude-4.7-sonnet" as OpenAiModelId];
+    }),
+  ),
 };
 
 const PRIORITY_AGENTS: Record<string, string[]> = {
@@ -106,11 +152,14 @@ const PRIORITY_AGENTS: Record<string, string[]> = {
   crit: ["Strategy", "Research", "Design", "Development", "Marketing", "Treasury", "Analytics", "Coordination", "Memory"],
 };
 
+/** Mission budget defaults (SOL). Hard cap is 10 — even "Critical" stays inside the slider
+ *  range and the deposit never exceeds ~$1.8k at devnet pricing. Higher tiers spend more
+ *  not by scaling the headline budget, but by promoting agents to costlier models. */
 const PRIORITY_BUDGET: Record<string, number> = {
-  low: 8,
-  std: 24,
-  high: 64,
-  crit: 120,
+  low: 1.5,
+  std: 3.5,
+  high: 6,
+  crit: 9,
 };
 
 const PRIORITY_MODEL: Record<string, string> = {
@@ -196,8 +245,17 @@ function SectionHeader({
 }
 
 export default function MissionCreate() {
-  const [prompt, setPrompt] = useState("Launch a meme marketing campaign");
+  const [prompt, setPrompt] = useState("");
   const [priority, setPriority] = useState("high");
+  // Rotating placeholder index — switches every 3 s so users see a stream of ideas
+  // without filling the page with chips.
+  const [placeholderIdx, setPlaceholderIdx] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => {
+      setPlaceholderIdx((i) => (i + 1) % placeholderPrompts.length);
+    }, 3000);
+    return () => clearInterval(id);
+  }, []);
   const [budget, setBudget] = useState(2);
   const [selected, setSelected] = useState<string[]>(allAgents.filter(a => a.default).map(a => a.name));
   const [delegation, setDelegation] = useState(70);
@@ -502,9 +560,9 @@ export default function MissionCreate() {
                           value={prompt}
                           onChange={(e) => setPrompt(e.target.value)}
                           rows={3}
-                          className="w-full resize-none bg-transparent text-base text-white placeholder:text-white/30 focus:outline-none"
+                          className="w-full resize-none bg-transparent text-base text-white placeholder:text-white/35 focus:outline-none"
                           maxLength={500}
-                          placeholder="Describe the objective in natural language…"
+                          placeholder={placeholderPrompts[placeholderIdx] ?? "Describe the objective in natural language…"}
                         />
                         <div className="mt-3 flex items-center justify-between text-[11px] text-white/40">
                           <div className="flex items-center gap-2">
@@ -522,22 +580,19 @@ export default function MissionCreate() {
                       </div>
                     </div>
 
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      {examplePrompts.map((p) => (
-                        <button
-                          key={p}
-                          onClick={() => setPrompt(p)}
-                          className={`rounded-full border px-3 py-1.5 text-xs transition ${
-                            prompt === p
-                              ? "border-cyan-300/40 bg-cyan-300/10 text-cyan-100"
-                              : "border-white/10 bg-white/[0.02] text-white/60 hover:border-cyan-300/30 hover:text-white"
-                          }`}
-                        >
-                          <Sparkles className="mr-1 inline h-3 w-3" />
-                          {p}
-                        </button>
-                      ))}
-                    </div>
+                    {/* Single "Try this idea" affordance — copies the current rotating
+                        placeholder into the textarea so users still discover suggestions
+                        without 4 chips eating a row of vertical space. */}
+                    {!prompt && (
+                      <button
+                        type="button"
+                        onClick={() => setPrompt(placeholderPrompts[placeholderIdx] ?? "")}
+                        className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.02] px-3 py-1.5 text-[11px] text-white/60 hover:border-cyan-300/30 hover:text-white"
+                      >
+                        <Sparkles className="h-3 w-3 text-cyan-300" />
+                        Try this idea
+                      </button>
+                    )}
                   </div>
                 </Card>
 
@@ -844,16 +899,35 @@ export default function MissionCreate() {
                           <Brain className="h-3 w-3" /> AI Optimization
                         </div>
                         <div className="mt-3 space-y-2 text-[11px]">
-                          {[
-                            { c: "#10b981", t: "Budget within optimal range" },
-                            { c: "#22d3ee", t: "Reroute 2.4 SOL → escrow for deeper buffer" },
-                            { c: "#f59e0b", t: "Consider Llama 4 for cost-efficient gen" },
-                          ].map((s, i) => (
-                            <div key={i} className="flex items-start gap-2 rounded-md bg-black/40 p-2">
-                              <span className="mt-1 h-1.5 w-1.5 rounded-full" style={{ background: s.c, boxShadow: `0 0 8px ${s.c}` }} />
-                              <span className="text-white/75">{s.t}</span>
-                            </div>
-                          ))}
+                          {(() => {
+                            // Dynamic suggestions tailored to the current budget / allocation / roster.
+                            const tips: { c: string; t: string }[] = [];
+                            // Budget health.
+                            if (budget < 1) tips.push({ c: "#f87171", t: `Budget ${budget.toFixed(2)} SOL is below the safe floor — agents may exhaust escrow mid-run.` });
+                            else if (budget > 7) tips.push({ c: "#f59e0b", t: `Budget ${budget.toFixed(2)} SOL is generous — consider shifting some to escrow buffer.` });
+                            else tips.push({ c: "#10b981", t: `Budget ${budget.toFixed(2)} SOL is in the optimal 1–7 SOL band for this mission shape.` });
+                            // Allocation health — flag if escrow reserve < 15 %.
+                            const escrowPct = (allocParts.escrowReserve / allocSum) * 100;
+                            if (escrowPct < 15) {
+                              tips.push({ c: "#22d3ee", t: `Escrow only ${escrowPct.toFixed(0)}% — bump to ≥20% so a stuck agent doesn't drain compute headroom.` });
+                            } else {
+                              tips.push({ c: "#22d3ee", t: `Escrow at ${escrowPct.toFixed(0)}% — solid runway for retries.` });
+                            }
+                            // Model mix tip.
+                            const premiumCount = selected.filter((n) => {
+                              const id = agentModels[n] ?? UNIFIED_AGENT_MODEL;
+                              return (OPENAI_MODELS.find((m) => m.id === id)?.solMult ?? 0) >= 5;
+                            }).length;
+                            if (premiumCount >= 5) tips.push({ c: "#f59e0b", t: `${premiumCount} agents on premium models — downshift Marketing/Treasury to Llama 4 to save ~30% SOL.` });
+                            else if (premiumCount === 0) tips.push({ c: "#a855f7", t: `All-OSS roster — consider upgrading Strategy or Development to Claude/GPT for the quality bump.` });
+                            else tips.push({ c: "#a855f7", t: `${premiumCount} premium / ${selected.length - premiumCount} OSS agents — well-balanced mix.` });
+                            return tips.slice(0, 3).map((s, i) => (
+                              <div key={i} className="flex items-start gap-2 rounded-md bg-black/40 p-2">
+                                <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: s.c, boxShadow: `0 0 8px ${s.c}` }} />
+                                <span className="text-white/75">{s.t}</span>
+                              </div>
+                            ));
+                          })()}
                         </div>
                         <button
                           type="button"
