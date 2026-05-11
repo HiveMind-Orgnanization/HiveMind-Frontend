@@ -1052,6 +1052,23 @@ function buildSandpackFiles(artifacts: MissionArtifact[]): {
   // Detect the entry point: prefer src/main.tsx hierarchy, fallback to template default
   const entry = ENTRY_CANDIDATES.find((c) => files[c]) ?? "/index.tsx";
 
+  // Create empty CSS stubs for any CSS imports that reference missing files.
+  // Sandpack fails hard on "module not found" for CSS — stubs prevent the error.
+  const allPaths = new Set(Object.keys(files));
+  for (const [filePath, { code }] of Object.entries(files)) {
+    if (!filePath.match(/\.(tsx?|jsx?)$/)) continue;
+    const dir = filePath.replace(/\/[^/]+$/, "") || "/";
+    for (const m of code.matchAll(/import\s+['"]([^'"]+\.css)['"]/g)) {
+      const imp = m[1]!;
+      if (imp.startsWith("http") || !imp.match(/^\.\.?\//)) continue; // skip absolute/pkg
+      const parts = `${dir}/${imp}`.split("/").filter(Boolean);
+      const resolved: string[] = [];
+      for (const p of parts) { if (p === "..") resolved.pop(); else if (p !== ".") resolved.push(p); }
+      const abs = `/${resolved.join("/")}`;
+      if (!allPaths.has(abs)) { files[abs] = { code: "" }; allPaths.add(abs); }
+    }
+  }
+
   return { files, dependencies, entry };
 }
 
@@ -1062,12 +1079,19 @@ function SandpackErrorMonitor({ onErrors }: { onErrors: (errs: string[]) => void
 
   useEffect(() => {
     const unsub = listen((msg: Record<string, unknown>) => {
+      // Catch bundler errors, module-not-found, compile errors, and runtime crashes
       const isErr =
         (msg["type"] === "action" && msg["action"] === "show-error") ||
-        msg["type"] === "compile-error";
+        msg["type"] === "compile-error" ||
+        msg["type"] === "module-error" ||
+        (msg["type"] === "done" && msg["compilatonError"] === true);
       if (!isErr) return;
-      const text = [msg["title"], msg["message"]].filter(Boolean).join(": ");
-      if (text) accRef.current.push(text);
+      const text = [
+        msg["title"] ?? msg["name"],
+        msg["message"],
+        msg["error"] && typeof msg["error"] === "object" ? (msg["error"] as Record<string, unknown>)["message"] : undefined,
+      ].filter(Boolean).join(": ");
+      if (text) accRef.current.push(String(text));
       if (timerRef.current) clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => {
         if (accRef.current.length > 0) { onErrors([...accRef.current]); accRef.current = []; }
