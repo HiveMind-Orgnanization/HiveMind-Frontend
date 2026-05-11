@@ -1206,6 +1206,8 @@ function SandpackErrorMonitor({ onErrors }: { onErrors: (errs: string[]) => void
     const looksLikeFixableRuntimeError = (text: string): boolean => {
       if (!text || text.length < 4) return false;
       const t = text.toLowerCase();
+      // React Router "future flag" warnings are advisory only — never trigger a repair from them.
+      if (/react router future flag warning/.test(t)) return false;
       return (
         /cannot use ['"]?import\.meta['"]?/.test(t) ||
         /uncaught (syntaxerror|referenceerror|typeerror)/.test(t) ||
@@ -1218,7 +1220,13 @@ function SandpackErrorMonitor({ onErrors }: { onErrors: (errs: string[]) => void
         /cannot find module/.test(t) ||
         /does not provide an export named/.test(t) ||
         /has no exported member/.test(t) ||
-        /element type is invalid/.test(t)
+        /element type is invalid/.test(t) ||
+        /no routes matched location/.test(t) ||
+        /cannot read propert(y|ies) of (undefined|null)/.test(t) ||
+        /cannot destructure propert(y|ies)/.test(t) ||
+        /maximum update depth exceeded/.test(t) ||
+        /objects are not valid as a react child/.test(t) ||
+        /(invalid|missing) hook call/.test(t)
       );
     };
 
@@ -1892,11 +1900,17 @@ function AgentWorkspaceMissionBody({
       "- Every relative import must point to a file you include in `fileUpdates`.",
     ].join("\n");
 
+    const hasNoRoutesMatched = /no routes matched location/i.test(errText);
+    const hasNullPropAccess = /cannot read propert(y|ies) of (undefined|null)/i.test(errText);
     const targetedHint = usesImportMeta
       ? "## Targeted hint\nThe error is caused by `import.meta` references in the code. Remove every `import.meta.*` reference and replace with the safe alternatives described above."
       : missingExportName
         ? `## Targeted hint\nThe error references missing export "${missingExportName}". Make sure the file that imports it uses the correct default-vs-named import, and that the source file exports the symbol with the matching name.`
-        : "";
+        : hasNoRoutesMatched
+          ? "## Targeted hint\nReact Router says 'No routes matched location \"/\"'. Sandpack mounts the app at `/` — your `<Routes>` block must define a route at exactly `path=\"/\"` that renders the home view. Either add `<Route path=\"/\" element={<Home/>} />` (most common fix) OR add `<Route path=\"*\" element={<NotFound/>} />` as a catch-all that renders the home UI when nothing matches. Do NOT use a basename inside Sandpack. If you use `BrowserRouter`, remove any `basename` prop."
+          : hasNullPropAccess
+            ? "## Targeted hint\nThe error is a TypeError from reading a property on undefined/null — likely an unguarded `.map`/`.length` on a value that isn't an array yet. Use `Array.isArray(x) ? x.map(...) : null` and provide useState defaults like `useState<T[]>([])`."
+            : "";
 
     const message = `\
 SANDPACK REACT PREVIEW ERROR — auto-fix attempt ${attempt} of ${MAX_ATTEMPTS}
