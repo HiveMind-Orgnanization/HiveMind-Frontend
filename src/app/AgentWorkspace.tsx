@@ -8,7 +8,7 @@ import {
   Loader2, Plus, Lock,
   ChevronDown, ChevronRight, File, Folder, Download,
   LayoutPanelLeft, Code2, ExternalLink, X,
-  FolderOpen, Sparkles, type LucideIcon,
+  FolderOpen, Sparkles, Maximize2, Minimize2, type LucideIcon,
 } from "lucide-react";
 import { Sidebar } from "./components/dashboard/sidebar";
 import { TopNav } from "./components/dashboard/topnav";
@@ -1653,6 +1653,68 @@ function AgentWorkspaceMissionBody({
     setWorkspaceLayoutState(next);
     try { window.localStorage.setItem("hivemind:workspace-layout", next); } catch { /* ignore */ }
   }, []);
+  /** Fullscreen mode hides the Sidebar + TopNav so the workspace fills the viewport. */
+  const [workspaceFullscreen, setWorkspaceFullscreenState] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("hivemind:workspace-fullscreen") === "1";
+  });
+  const setWorkspaceFullscreen = useCallback((next: boolean) => {
+    setWorkspaceFullscreenState(next);
+    try { window.localStorage.setItem("hivemind:workspace-fullscreen", next ? "1" : "0"); } catch { /* ignore */ }
+  }, []);
+
+  /**
+   * Inline pill that lets the user pick chat-only / split / code-only layout AND toggle
+   * fullscreen. Rendered into the work-panel header AND a slim chat-panel header so it stays
+   * reachable regardless of which mode is active.
+   */
+  const LayoutToggle = () => (
+    <div
+      role="radiogroup"
+      aria-label="Workspace layout"
+      className="flex items-center gap-0.5 rounded-lg border border-white/10 bg-black/40 p-0.5"
+    >
+      {([
+        { id: "chat-only" as const, icon: MessageSquare, label: "Chat" },
+        { id: "split" as const, icon: LayoutPanelLeft, label: "Split" },
+        { id: "work-only" as const, icon: Code2, label: "Code" },
+      ] as const).map(({ id, icon: Icon, label }) => {
+        const active = workspaceLayout === id;
+        return (
+          <button
+            key={id}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            title={`${label} view`}
+            onClick={() => setWorkspaceLayout(id)}
+            className={`inline-flex h-[26px] items-center gap-1 rounded-md px-2 text-[11px] font-medium transition ${
+              active
+                ? "bg-cyan-500/15 text-cyan-200 ring-1 ring-cyan-300/30"
+                : "text-white/55 hover:bg-white/[0.04] hover:text-white/85"
+            }`}
+          >
+            <Icon className="h-3.5 w-3.5" aria-hidden />
+            <span className="hidden md:inline">{label}</span>
+          </button>
+        );
+      })}
+      <button
+        type="button"
+        title={workspaceFullscreen ? "Exit fullscreen" : "Enter fullscreen (hides sidebar + topnav)"}
+        onClick={() => setWorkspaceFullscreen(!workspaceFullscreen)}
+        className={`ml-0.5 inline-flex h-[26px] items-center justify-center rounded-md px-1.5 transition ${
+          workspaceFullscreen
+            ? "bg-cyan-500/15 text-cyan-200 ring-1 ring-cyan-300/30"
+            : "text-white/55 hover:bg-white/[0.04] hover:text-white/85"
+        }`}
+      >
+        {workspaceFullscreen
+          ? <Minimize2 className="h-3.5 w-3.5" aria-hidden />
+          : <Maximize2 className="h-3.5 w-3.5" aria-hidden />}
+      </button>
+    </div>
+  );
   /** False until server workspace merge finishes — avoids PUT-ing an empty snapshot before GET returns. */
   const [workspaceMergeDone, setWorkspaceMergeDone] = useState(false);
   /** Live "Thinking…" indicator for the agent currently working (driven by [work] events). */
@@ -2964,9 +3026,9 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[#04060c] text-white antialiased">
-      <Sidebar />
+      {!workspaceFullscreen && <Sidebar />}
       <div className="flex min-w-0 flex-1 flex-col">
-        <TopNav />
+        {!workspaceFullscreen && <TopNav />}
 
         <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
           <div className="pointer-events-none absolute inset-0 opacity-60">
@@ -2978,42 +3040,6 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
           <Particles count={22} />
 
           <div className="relative flex min-h-0 flex-1 flex-col px-4 py-3">
-            {/* Layout toggle — choose chat-only, split, or work-only view of the workspace.
-                Always rendered (independent of which panel is visible) so the user can switch
-                back from a single-panel mode. */}
-            <div className="mb-2 flex items-center justify-end">
-              <div
-                role="radiogroup"
-                aria-label="Workspace layout"
-                className="flex items-center gap-0.5 rounded-lg border border-white/10 bg-black/40 p-0.5"
-              >
-                {([
-                  { id: "chat-only" as const, icon: MessageSquare, label: "Chat only" },
-                  { id: "split" as const, icon: LayoutPanelLeft, label: "Split view" },
-                  { id: "work-only" as const, icon: Code2, label: "Code only" },
-                ] as const).map(({ id, icon: Icon, label }) => {
-                  const active = workspaceLayout === id;
-                  return (
-                    <button
-                      key={id}
-                      type="button"
-                      role="radio"
-                      aria-checked={active}
-                      title={label}
-                      onClick={() => setWorkspaceLayout(id)}
-                      className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-medium transition ${
-                        active
-                          ? "bg-cyan-500/15 text-cyan-200 ring-1 ring-cyan-300/30"
-                          : "text-white/55 hover:bg-white/[0.04] hover:text-white/85"
-                      }`}
-                    >
-                      <Icon className="h-3.5 w-3.5" aria-hidden />
-                      <span className="hidden sm:inline">{label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
             {/* 30% communication · 70% code + live preview — fills full viewport under TopNav */}
             <div className="flex min-h-0 flex-1 flex-col gap-3 xl:flex-row xl:items-stretch">
               {/* ── Agent Communication panel — hidden in work-only mode ── */}
@@ -3024,6 +3050,18 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                   : "xl:flex-none xl:w-[30%] xl:max-w-md"
               }`}>
                 <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
+
+                  {/* Slim header — only in chat-only mode (work panel header is hidden then,
+                      so this is the only place to put the layout toggle). */}
+                  {workspaceLayout === "chat-only" && (
+                    <div className="flex items-center justify-between border-b border-white/5 px-3 py-2">
+                      <div className="flex items-center gap-2 text-[11px] text-white/55">
+                        <MessageSquare className="h-3.5 w-3.5 text-cyan-300" aria-hidden />
+                        Agent communication
+                      </div>
+                      <LayoutToggle />
+                    </div>
+                  )}
 
                   {/* Active agent banner — only shown while swarm is running */}
                   <AnimatePresence>
@@ -3148,6 +3186,7 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                       </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
+                      <LayoutToggle />
                       <button
                         type="button"
                         onClick={() => setActivityDrawerOpen(true)}

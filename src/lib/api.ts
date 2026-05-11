@@ -227,7 +227,10 @@ export async function swarmRunMissionApi(
     const SLOW_INTERVAL_MS = 4000;
     const FAST_POLLS = 8; // 8 × 1.5s = 12s of fast polling, then back off
     let elapsedMs = 0;
-    const MAX_MS = 8 * 60_000;
+    // Swarm with 5-6 repair rounds + multiple agents + gpt-5.5 can run 10-15 minutes on
+    // a complex codegen mission. Was 8 — users hit "Swarm timed out (8 min)" while the
+    // backend was still working and ended up with stale partial state.
+    const MAX_MS = 20 * 60_000;
     let pollIdx = 0;
     while (elapsedMs < MAX_MS) {
       const intervalMs = pollIdx < FAST_POLLS ? FAST_INTERVAL_MS : SLOW_INTERVAL_MS;
@@ -271,7 +274,7 @@ export async function swarmRunMissionApi(
       if (s.status === "failed") return { ok: false, status: 500, message: s.error ?? "Swarm run failed." };
       // status === "running" — keep polling
     }
-    return { ok: false, status: 408, message: "Swarm timed out waiting for results (8 min)." };
+    return { ok: false, status: 408, message: "Swarm took longer than 20 min — the backend may still be working. Refresh the page in a minute; if files appear, the swarm finished after this client stopped polling." };
   } catch {
     return { ok: false, status: 0, message: "Could not reach the backend. Is it running on port 8787?" };
   }
