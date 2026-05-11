@@ -1367,7 +1367,12 @@ function SandpackErrorMonitor({ onErrors }: { onErrors: (errs: string[]) => void
         /(invalid|missing) hook call/.test(t) ||
         /an error occurred in the <[\w.]+> component/.test(t) ||
         /^typeerror:/.test(t) ||
-        /^error:/.test(t)
+        /^error:/.test(t) ||
+        // Sandpack runtime / CodeSandbox bundler outages — surface our fallback instead of
+        // the iframe's generic "Couldn't connect to server" screen.
+        /couldn't connect to server/.test(t) ||
+        /error:\s*time_out/.test(t) ||
+        /bundler\s+timed?\s*out/.test(t)
       );
     };
 
@@ -1570,7 +1575,15 @@ function SandpackLivePreview({
           template="react-ts"
           files={files}
           customSetup={{ dependencies, entry }}
-          options={{ externalResources: ["https://cdn.tailwindcss.com"] }}
+          options={{
+            externalResources: ["https://cdn.tailwindcss.com"],
+            // Default is 30 s; large 40+ file projects sometimes need more before the CodeSandbox
+            // bundler service replies. Hitting the timeout shows "Couldn't connect to server".
+            bundlerTimeOut: 90_000,
+            // Coalesce rapid file updates so we don't hammer the bundler while typing.
+            recompileMode: "delayed",
+            recompileDelay: 600,
+          }}
           theme="dark"
         >
           <SandpackErrorMonitor onErrors={handleInternalErrors} />
@@ -1584,9 +1597,24 @@ function SandpackLivePreview({
             style={{ width: "100%", height: `${Math.max(200, frameHeight - 24)}px` }}
           />
         </SandpackProvider>
-        {/* No floating overlay here — the auto-fix flow now narrates progress in the chat
-            (Development bubble with retry thoughts + green/red diff counts). Avoids the
-            "Preview hit a snag" floating card that duplicated the same information. */}
+        {/* If Sandpack's CodeSandbox-hosted bundler service is unreachable (network blip,
+            firewall, service degradation), the iframe paints a generic "Couldn't connect to
+            server" / "ERROR: TIME_OUT" page. Overlay our own friendly fallback so the user
+            knows what to do — refresh, or download the ZIP and run locally. */}
+        {hasFatalError && !autoFixing && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center px-4 pb-4">
+            <div className="pointer-events-auto flex max-w-md items-start gap-3 rounded-xl border border-amber-300/30 bg-[#1a1407]/92 px-4 py-3 text-xs text-amber-100/90 shadow-lg backdrop-blur">
+              <Sparkles className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-300" aria-hidden />
+              <div className="space-y-1">
+                <div className="font-medium text-amber-100">Live preview hit a snag</div>
+                <div className="text-amber-100/70">
+                  The agents are looking at it — if it doesn’t recover in a moment, tap the
+                  iframe’s refresh button, or download the ZIP and run <code className="rounded bg-black/40 px-1">npm run dev</code> locally.
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
