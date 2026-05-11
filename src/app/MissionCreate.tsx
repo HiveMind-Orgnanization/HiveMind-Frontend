@@ -610,9 +610,12 @@ export default function MissionCreate() {
                             {metrics.map((mrow, i) => (
                               <div
                                 key={`${mrow.label}-${i}`}
-                                className="group flex items-center justify-between gap-2 rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs"
+                                className="group flex items-center gap-2 rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs"
                               >
-                                <span className="flex items-center gap-2 text-white/70">
+                                {/* Label cell takes the available space; its input shrinks with min-w-0 so long
+                                    "Average player session duration"-style names truncate via overflow rather than
+                                    pushing the target value off-screen. */}
+                                <div className="flex min-w-0 flex-1 items-center gap-2 text-white/70">
                                   <span
                                     className="h-1.5 w-1.5 shrink-0 rounded-full"
                                     style={{
@@ -625,16 +628,16 @@ export default function MissionCreate() {
                                     onChange={(e) =>
                                       setMetrics(metrics.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))
                                     }
-                                    className="min-w-0 flex-1 bg-transparent text-white/85 focus:outline-none"
+                                    className="min-w-0 flex-1 truncate bg-transparent text-white/85 focus:outline-none"
                                   />
-                                </span>
-                                <div className="flex items-center gap-2">
+                                </div>
+                                <div className="flex shrink-0 items-center gap-2">
                                   <input
                                     value={mrow.target}
                                     onChange={(e) =>
                                       setMetrics(metrics.map((x, j) => (j === i ? { ...x, target: e.target.value } : x)))
                                     }
-                                    className="w-36 bg-transparent text-right tabular-nums text-white/85 focus:outline-none"
+                                    className="w-24 bg-transparent text-right tabular-nums text-white/85 focus:outline-none"
                                   />
                                   <button
                                     type="button"
