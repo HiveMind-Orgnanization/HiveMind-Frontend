@@ -999,6 +999,45 @@ function sandpackCss(css: string): string {
     .replace(/@import\s+["']tailwindcss\/[^"']*["'];[ \t]*/gm, "");
 }
 
+/**
+ * Sandpack's in-browser bundler does NOT support Vite's `import.meta.env.*` syntax —
+ * trying to evaluate transpiled code with `import.meta` yields:
+ *   "Cannot use 'import.meta' outside a module"
+ * (visible in the screenshot for mission M-793).
+ *
+ * Agents are intentionally instructed in `agent-runtime.ts` to use `import.meta.env.VITE_API_URL`
+ * because that's correct for the hosted Vite preview ("Host" button → real `vite build`).
+ * For the in-browser Sandpack preview we replace the references with safe runtime values so the
+ * generated code runs unchanged. The DB copy still has the production-correct `import.meta` form.
+ *
+ * - `import.meta.env.VITE_API_URL` → `""`  (no backend in Sandpack — fetch becomes relative no-op)
+ * - `import.meta.env.BASE_URL`     → `"/"`
+ * - `import.meta.env.MODE`         → `"development"`
+ * - `import.meta.env.DEV`          → `true`
+ * - `import.meta.env.PROD`         → `false`
+ * - `import.meta.env.SSR`          → `false`
+ * - any other `import.meta.env.X`  → `""`
+ * - `import.meta.url`              → `""`
+ * - `import.meta.hot`              → `undefined`
+ * - bare `import.meta`             → `({ env: {}, url: "", hot: undefined })`
+ */
+function sandpackJsTs(code: string): string {
+  if (!code.includes("import.meta")) return code;
+  let next = code;
+  next = next.replace(/import\.meta\.env\.VITE_API_URL\b/g, '""');
+  next = next.replace(/import\.meta\.env\.BASE_URL\b/g, '"/"');
+  next = next.replace(/import\.meta\.env\.MODE\b/g, '"development"');
+  next = next.replace(/import\.meta\.env\.DEV\b/g, "true");
+  next = next.replace(/import\.meta\.env\.PROD\b/g, "false");
+  next = next.replace(/import\.meta\.env\.SSR\b/g, "false");
+  next = next.replace(/import\.meta\.env\.[A-Za-z_][A-Za-z0-9_]*/g, '""');
+  next = next.replace(/import\.meta\.env\b/g, "({})");
+  next = next.replace(/import\.meta\.url\b/g, '""');
+  next = next.replace(/import\.meta\.hot\b/g, "undefined");
+  next = next.replace(/\bimport\.meta\b/g, '({ env: {}, url: "", hot: undefined })');
+  return next;
+}
+
 function buildSandpackFiles(artifacts: MissionArtifact[]): {
   files: Record<string, { code: string }>;
   dependencies: Record<string, string>;
@@ -1032,7 +1071,12 @@ function buildSandpackFiles(artifacts: MissionArtifact[]): {
     const sp = rel.startsWith("/") ? rel : `/${rel}`;
     let code = art.content;
     if (sp.endsWith(".css")) code = sandpackCss(code);
-    else if (sp.match(/\.(tsx?|jsx?)$/)) code = resolveAtAlias(code, sp);
+    else if (sp.match(/\.(tsx?|jsx?)$/)) {
+      code = resolveAtAlias(code, sp);
+      // Strip Vite-only `import.meta.*` so Sandpack's bundler doesn't throw
+      // "Cannot use 'import.meta' outside a module" during evaluation.
+      code = sandpackJsTs(code);
+    }
     files[sp] = { code };
   }
 
@@ -1120,9 +1164,31 @@ function SandpackErrorMonitor({ onErrors }: { onErrors: (errs: string[]) => void
     } catch { /* never crash the preview */ }
   }, [(sandpack as unknown as { errors?: unknown[] }).errors, onErrors]);
 
-  // Fallback: message bus — only real bundler events, NOT console.error/warn
-  // (those are shown in SandpackConsole and don't represent fixable compile errors).
+  // Fallback: message bus — bundler events AND iframe runtime errors that look like real
+  // compile/eval failures. We deliberately skip noisy console.warn / console.info; we DO
+  // pick up uncaught runtime errors with patterns like "Cannot use 'import.meta'..." which
+  // are the exact failures the user is seeing in the live preview.
   useEffect(() => {
+    /** Heuristic: does this iframe console message look like a fixable compile/eval error? */
+    const looksLikeFixableRuntimeError = (text: string): boolean => {
+      if (!text || text.length < 4) return false;
+      const t = text.toLowerCase();
+      return (
+        /cannot use ['"]?import\.meta['"]?/.test(t) ||
+        /uncaught (syntaxerror|referenceerror|typeerror)/.test(t) ||
+        /^syntaxerror\b/.test(t) ||
+        /^referenceerror\b/.test(t) ||
+        /unexpected token/.test(t) ||
+        /is not a function/.test(t) ||
+        /is not defined/.test(t) ||
+        /failed to fetch dynamically imported module/.test(t) ||
+        /cannot find module/.test(t) ||
+        /does not provide an export named/.test(t) ||
+        /has no exported member/.test(t) ||
+        /element type is invalid/.test(t)
+      );
+    };
+
     const unsub = listen((msg: Record<string, unknown>) => {
       try {
         const isBundlerErr =
@@ -1131,12 +1197,48 @@ function SandpackErrorMonitor({ onErrors }: { onErrors: (errs: string[]) => void
           msg["type"] === "module-error" ||
           (msg["type"] === "done" &&
             (msg["compilatonError"] === true || msg["compileError"] === true));
-        if (!isBundlerErr) return;
 
-        const text = [msg["title"] ?? msg["name"], msg["message"]]
-          .filter(Boolean)
-          .join(": ")
-          .trim();
+        // Iframe runtime / console error events — Sandpack forwards these via `console` /
+        // `urlback` / `error` event types depending on bundler version. Filter to the ones
+        // that look like fixable compile/eval errors so we never spam the agent on warns.
+        let runtimeErrText = "";
+        if (!isBundlerErr) {
+          const t = msg["type"];
+          const candidate =
+            t === "console" || t === "log" || t === "error" || t === "urlback"
+              ? (() => {
+                  const log = msg["log"] as Array<{ method?: string; data?: unknown[] }> | undefined;
+                  if (Array.isArray(log)) {
+                    return log
+                      .filter((entry) => entry?.method === "error")
+                      .map((entry) =>
+                        (entry?.data ?? [])
+                          .map((d) => (typeof d === "string" ? d : safeStringify(d)))
+                          .join(" "),
+                      )
+                      .join("\n");
+                  }
+                  // Some bundler versions send a single message field.
+                  const single =
+                    typeof msg["message"] === "string"
+                      ? (msg["message"] as string)
+                      : typeof msg["error"] === "string"
+                        ? (msg["error"] as string)
+                        : "";
+                  return single;
+                })()
+              : "";
+          if (looksLikeFixableRuntimeError(candidate)) runtimeErrText = candidate.trim();
+        }
+
+        if (!isBundlerErr && !runtimeErrText) return;
+
+        const text = isBundlerErr
+          ? [msg["title"] ?? msg["name"], msg["message"]]
+              .filter(Boolean)
+              .join(": ")
+              .trim()
+          : runtimeErrText;
         if (text.length > 4) accRef.current.push(text);
 
         if (timerRef.current) clearTimeout(timerRef.current);
@@ -1157,6 +1259,15 @@ function SandpackErrorMonitor({ onErrors }: { onErrors: (errs: string[]) => void
   }, [listen, onErrors]);
 
   return null;
+}
+
+/** Best-effort JSON.stringify that swallows cycles/native objects. */
+function safeStringify(v: unknown): string {
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return String(v);
+  }
 }
 
 function SandpackLivePreview({
@@ -1671,21 +1782,51 @@ function AgentWorkspaceMissionBody({
       if (hits) hits.forEach((p) => errorPaths.add(p));
     }
 
+    // Detect known Sandpack-specific failure patterns so the prompt can give targeted guidance
+    // (and ensure files containing the offending pattern are sent to the agent).
+    const errText = errors.slice(0, 6).join("\n");
+    const usesImportMeta =
+      /import\.meta/i.test(errText) || /Cannot use 'import\.meta'/i.test(errText);
+    const missingExportMatch = errText.match(
+      /['"]([^'"]+)['"]\s+(?:does not provide an export named|has no exported member|is not exported)/i,
+    );
+    const missingExportName = missingExportMatch?.[1] ?? null;
+
     // Inline the relevant files so the agent can see exactly what needs fixing.
-    // Falls back to all frontend files if we couldn't parse specific paths.
+    // Falls back to all frontend files when no specific paths are mentioned.
     const deduped = dedupeArtifactsByPath(artifacts);
     const frontendFiles = deduped.filter(
       (a) => a.kind === "file" && (a.path.startsWith("frontend/") || a.path.startsWith("src/")),
     );
-    const relevant = frontendFiles
-      .filter((a) => {
-        if (errorPaths.size === 0) return true;
-        const rel = "/" + a.path.replace(/^frontend\//, "");
-        return [...errorPaths].some((ep) => rel.includes(ep) || ep.includes(rel.replace(/^\//, "")));
-      })
-      .slice(0, 6);
-    // Always include the entry-point candidates so the agent has the full picture.
-    const entryKeys = ["/src/main.tsx", "/src/App.tsx", "/src/index.tsx"];
+
+    // Score each file: higher score → more likely to be the cause / needed by the agent.
+    const scoreFile = (a: MissionArtifact): number => {
+      const rel = "/" + a.path.replace(/^frontend\//, "");
+      let score = 0;
+      // 1. Path explicitly mentioned in the error
+      if (errorPaths.size > 0) {
+        for (const ep of errorPaths) {
+          if (rel.includes(ep) || ep.includes(rel.replace(/^\//, ""))) {
+            score += 50;
+            break;
+          }
+        }
+      }
+      // 2. File contains the failing pattern (`import.meta`, missing export, etc.)
+      if (usesImportMeta && a.content.includes("import.meta")) score += 40;
+      if (missingExportName && a.content.includes(missingExportName)) score += 30;
+      // 3. Entry / app shell
+      if (/\/src\/(main|index|App)\.(tsx|ts|jsx|js)$/.test(rel)) score += 20;
+      // 4. Smaller files are cheaper to include in full
+      if (a.content.length < 4_000) score += 5;
+      return score;
+    };
+
+    const ranked = [...frontendFiles].sort((a, b) => scoreFile(b) - scoreFile(a));
+    const MAX_FILES = 12;
+    const relevant = ranked.slice(0, MAX_FILES);
+    // Always include the entry-point candidates if not already in.
+    const entryKeys = ["/src/main.tsx", "/src/App.tsx", "/src/index.tsx", "/src/main.jsx", "/src/App.jsx"];
     for (const a of frontendFiles) {
       const rel = "/" + a.path.replace(/^frontend\//, "");
       if (entryKeys.includes(rel) && !relevant.includes(a)) relevant.push(a);
@@ -1695,28 +1836,57 @@ function AgentWorkspaceMissionBody({
       .map((a) => {
         const rel = a.path.replace(/^frontend\//, "");
         const lang = rel.endsWith(".tsx") ? "tsx" : rel.endsWith(".ts") ? "ts" : rel.endsWith(".css") ? "css" : "js";
-        const body = a.content.length > 5_000 ? a.content.slice(0, 5_000) + "\n// …[truncated]" : a.content;
+        const body = a.content.length > 6_000 ? a.content.slice(0, 6_000) + "\n// …[truncated]" : a.content;
         return `#### ${rel}\n\`\`\`${lang}\n${body}\n\`\`\``;
       })
       .join("\n\n");
 
-    const errText = errors.slice(0, 4).join("\n");
+    // Build environment-specific guidance the agent must follow when patching.
+    // The default agent system prompt encourages `import.meta.env.VITE_API_URL` (correct for the
+    // hosted Vite "Host" build), but that breaks in Sandpack — override it here.
+    const sandpackConstraints = [
+      "## Sandpack runtime constraints (the live preview uses CodeSandbox's in-browser bundler — NOT Vite)",
+      "- Do NOT use `import.meta` anywhere (no `import.meta.env.*`, `import.meta.url`, `import.meta.hot`).",
+      "  Sandpack throws `Cannot use 'import.meta' outside a module` during evaluation.",
+      "- For API base URLs in Sandpack, use a plain string (`\"\"` for same-origin) or read from a window global,",
+      "  e.g. `const API_BASE = (window as any).__VITE_API_URL__ ?? \"\";`. Do not call `import.meta.env`.",
+      "- Do not depend on Vite-specific config (`vite.config.*`), PostCSS, or Tailwind config files —",
+      "  Sandpack ignores them. Tailwind utility classes are loaded via the Tailwind Play CDN automatically;",
+      "  don't add `@tailwind` directives in CSS files.",
+      "- Don't import images from `/public/...` or use `new URL(..., import.meta.url)`.",
+      "- Stick to react / react-dom / react-router-dom / lucide-react and other plain npm packages.",
+      "- Every component you import must actually be exported (default vs named matters).",
+      "- Every relative import must point to a file you include in `fileUpdates`.",
+    ].join("\n");
+
+    const targetedHint = usesImportMeta
+      ? "## Targeted hint\nThe error is caused by `import.meta` references in the code. Remove every `import.meta.*` reference and replace with the safe alternatives described above."
+      : missingExportName
+        ? `## Targeted hint\nThe error references missing export "${missingExportName}". Make sure the file that imports it uses the correct default-vs-named import, and that the source file exports the symbol with the matching name.`
+        : "";
 
     const message = `\
 SANDPACK REACT PREVIEW ERROR — auto-fix attempt ${attempt} of ${MAX_ATTEMPTS}
 
-## Error(s)
+## Error(s) reported by Sandpack
 \`\`\`
 ${errText}
 \`\`\`
 
-## Current source files
+${sandpackConstraints}
+
+${targetedHint}
+
+## Current source files (most-likely-relevant first)
 ${fileBlock || "(no frontend files found — regenerate from scratch)"}
 
 ## Your task
-Fix the error(s) above by editing the source files.
-Common causes: wrong import/export (default vs named), missing component export, bad relative path, broken JSX.
-Output every changed file in full — no truncation, no "..." placeholders.
+Fix the error(s) above by editing the listed source files. Common causes:
+- Vite-only syntax (\`import.meta.*\`) leaking into Sandpack
+- Wrong import/export (default vs named), missing component export
+- Broken relative path or missing file
+- Invalid JSX or duplicate default export
+Output every changed file in full — no truncation, no "..." placeholders, no comments like "rest unchanged".
 
 ## MANDATORY RESPONSE FORMAT
 You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose outside the JSON.
