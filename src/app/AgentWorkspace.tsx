@@ -1662,7 +1662,33 @@ function AgentWorkspaceMissionBody({
       const res = await startMissionPreview(mission.id);
       setPreviewStarting(false);
       if (!res.ok || !res.url) {
-        if (!opts?.quiet) toast.error(res.message ?? "Preview failed");
+        // Surface the failure in chat as a HiveMind narration instead of a giant red toast.
+        // The backend now appends the captured Vite stderr tail to res.message, so the user
+        // can scroll the bubble and see exactly which file Vite choked on.
+        const detail = (res.message ?? "Preview failed").trim();
+        const summary = detail.split(/[—.\n]/)[0]?.slice(0, 180) ?? "Preview build failed.";
+        const tailIdx = detail.indexOf("---\n");
+        const buildTail = tailIdx >= 0 ? detail.slice(tailIdx + 4).slice(0, 800) : "";
+        const ts = new Date().toLocaleTimeString("en-US", { hour12: false });
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now() + Math.floor(Math.random() * 9999),
+            agent: "HiveMind",
+            color: "#f59e0b",
+            kind: "system_warn",
+            state: "failed",
+            ts,
+            text: [
+              `**Hosted preview build failed.** ${summary}`,
+              "",
+              "Try one of these in the chat below:",
+              "- `fix the build error` — the agents will read the log and patch the source.",
+              "- `rewrite App.tsx as the simplest possible version` — when one file keeps breaking.",
+              buildTail ? "\n**Vite build log (last 800 chars):**\n```\n" + buildTail + "\n```" : "",
+            ].filter(Boolean).join("\n"),
+          },
+        ]);
         return false;
       }
       const u = res.url.endsWith("/") ? res.url : `${res.url}/`;
