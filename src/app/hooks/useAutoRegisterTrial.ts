@@ -56,25 +56,53 @@ export function useAutoRegisterTrial() {
         const status = await fetchTrialStatus(walletStr);
         if (status?.registered) return;
 
-        // 2. Check SOL balance — register_user requires ~0.002 SOL rent (payer = user)
+        // 2. Check SOL balance — register_user requires ~0.002 SOL rent (payer = user).
+        // Devnet's public faucet is rate-limited and almost never works, so we ask the
+        // backend funder wallet to sponsor brand-new wallets via /api/trial/fund-wallet.
+        // Falls back to the public airdrop only if the backend funder isn't configured.
         const balance = await connection.getBalance(publicKey);
         if (balance < MIN_SOL_FOR_REGISTER) {
-          toast.info("Funding your devnet wallet before registering…", { duration: 4000 });
+          toast.info("Sponsoring your devnet wallet…", { id: "trial-fund", duration: 6000 });
+          let funded = false;
           try {
-            const airdropSig = await connection.requestAirdrop(publicKey, AIRDROP_AMOUNT);
-            // Wait up to 30 s for the airdrop
-            const latestBlockhash = await connection.getLatestBlockhash();
-            await connection.confirmTransaction(
-              { signature: airdropSig, ...latestBlockhash },
-              "confirmed",
-            );
-          } catch (airdropErr) {
-            // Devnet airdrop is rate-limited — warn but attempt registration anyway
-            console.warn("[auto-register-trial] airdrop failed:", airdropErr);
-            toast.warning(
-              "Devnet airdrop rate-limited. If registration fails, get SOL from faucet.solana.com.",
-              { duration: 6000 },
-            );
+            const r = await fetch(`/api/trial/fund-wallet`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ wallet: walletStr }),
+            });
+            const j = (await r.json().catch(() => ({}))) as { ok?: boolean; signature?: string; error?: string; message?: string };
+            if (r.ok && j.ok) {
+              funded = true;
+              // Wait briefly for the deposit to land in the wallet's balance.
+              for (let i = 0; i < 5; i++) {
+                const b = await connection.getBalance(publicKey, "confirmed");
+                if (b >= MIN_SOL_FOR_REGISTER) break;
+                await new Promise((r) => setTimeout(r, 1200));
+              }
+              toast.dismiss("trial-fund");
+            } else if (j.error === "funder_not_configured") {
+              console.warn("[auto-register-trial] funder not configured on backend; falling back to public faucet");
+            } else {
+              console.warn("[auto-register-trial] fund-wallet failed:", j.message || j.error);
+            }
+          } catch (e) {
+            console.warn("[auto-register-trial] fund-wallet network error:", e);
+          }
+          // Fallback: only try the public devnet faucet if the backend couldn't fund.
+          if (!funded) {
+            try {
+              const airdropSig = await connection.requestAirdrop(publicKey, AIRDROP_AMOUNT);
+              const latestBlockhash = await connection.getLatestBlockhash();
+              await connection.confirmTransaction({ signature: airdropSig, ...latestBlockhash }, "confirmed");
+              toast.dismiss("trial-fund");
+            } catch (airdropErr) {
+              console.warn("[auto-register-trial] airdrop failed:", airdropErr);
+              toast.dismiss("trial-fund");
+              toast.warning(
+                "Couldn't auto-fund the wallet. Send 0.01 SOL on devnet and reconnect.",
+                { duration: 7000 },
+              );
+            }
           }
         }
 
@@ -119,9 +147,22 @@ export function useAutoRegisterTrial() {
       } catch (err: unknown) {
         toast.dismiss("trial-register");
         const msg = err instanceof Error ? err.message : String(err);
-        // User rejected the wallet popup — don't show an error
-        if (msg.toLowerCase().includes("user rejected") || msg.toLowerCase().includes("cancelled")) return;
-        toast.error(`Wallet registration failed: ${msg.slice(0, 120)}`, { duration: 8000 });
+        const lower = msg.toLowerCase();
+        // User rejected the wallet popup or simulation failed (almost always 0 SOL on devnet) —
+        // don't surface an alarming red error; the sidebar already shows "Activating…" and the
+        // user can retry from the trial page. Log to console for debugging.
+        if (
+          lower.includes("user rejected")
+          || lower.includes("cancelled")
+          || lower.includes("simulation failed")
+          || lower.includes("insufficient")
+        ) {
+          if (import.meta.env.DEV) console.warn("[auto-register-trial]", err);
+          return;
+        }
+        toast.message("Couldn't activate your free trial yet — retry from the Trial page if it doesn't settle in a minute.", {
+          duration: 7000,
+        });
         if (import.meta.env.DEV) console.warn("[auto-register-trial]", err);
       }
     })();
