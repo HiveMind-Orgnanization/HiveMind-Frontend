@@ -1148,6 +1148,24 @@ function SandpackLivePreview({
     return `${d.length}-${d[d.length - 1]?.createdAt ?? 0}`;
   }, [artifacts]);
 
+  // SandpackPreview ignores flex/percentage heights — measure the real container pixel
+  // height with ResizeObserver and pass it as an explicit px value.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [frameHeight, setFrameHeight] = useState(520);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => {
+      const h = entry?.contentRect.height;
+      if (h && h > 50) setFrameHeight(h);
+    });
+    ro.observe(el);
+    // Set initial height immediately
+    const initial = el.getBoundingClientRect().height;
+    if (initial > 50) setFrameHeight(initial);
+    return () => ro.disconnect();
+  }, []);
+
   if (!hasFiles) {
     return (
       <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-dashed border-white/[0.14] bg-gradient-to-b from-black/25 to-transparent">
@@ -1168,26 +1186,22 @@ function SandpackLivePreview({
           AI is auto-fixing preview errors…
         </div>
       )}
-      {/* flex-1 wrapper gives Sandpack a measured height to fill */}
-      <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      {/* This div is the height source — ResizeObserver reads its real pixel height */}
+      <div ref={containerRef} style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
         <SandpackProvider
           key={sandpackKey}
           template="react-ts"
           files={files}
           customSetup={{ dependencies, entry }}
-          options={{
-            externalResources: [
-              // Play CDN (JS) — scans DOM for utility classes and applies them dynamically
-              "https://cdn.tailwindcss.com",
-            ],
-          }}
+          options={{ externalResources: ["https://cdn.tailwindcss.com"] }}
           theme="dark"
         >
           <SandpackErrorMonitor onErrors={onErrors} />
+          {/* Pass measured pixel height — Sandpack ignores flex/% heights */}
           <SandpackFrame
             showOpenInCodeSandbox={false}
             showRefreshButton
-            style={{ flex: 1, height: "100%", minHeight: 0 }}
+            style={{ width: "100%", height: `${frameHeight}px` }}
           />
         </SandpackProvider>
       </div>
