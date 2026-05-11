@@ -4,39 +4,65 @@ import { Plus, Minus, Maximize2, Move } from "lucide-react";
 
 type Anchor = "top" | "right" | "bottom" | "left" | "tl" | "tr" | "bl" | "br";
 
-const GRAPH_NODES: {
-  id: string;
-  label: string;
-  x: number;
-  y: number;
-  color: string;
-  model: string;
-  anchor: Anchor;
-}[] = [
-  { id: "strategy", label: "Strategy", x: 50, y: 18, color: "#22d3ee", model: "Claude 4.7", anchor: "top" },
-  { id: "research", label: "Research", x: 78, y: 32, color: "#a855f7", model: "GPT-5", anchor: "tr" },
-  { id: "design", label: "Design", x: 78, y: 72, color: "#3b82f6", model: "Llama 4", anchor: "br" },
-  { id: "development", label: "Development", x: 88, y: 52, color: "#0ea5e9", model: "DeepSeek", anchor: "right" },
-  { id: "marketing", label: "Marketing", x: 62, y: 88, color: "#ec4899", model: "GPT-5", anchor: "bottom" },
-  { id: "treasury", label: "Treasury", x: 50, y: 86, color: "#10b981", model: "DeepSeek", anchor: "bottom" },
-  { id: "analytics", label: "Analytics", x: 22, y: 72, color: "#8b5cf6", model: "Qwen 3", anchor: "bl" },
-  { id: "coordination", label: "Coordination", x: 22, y: 32, color: "#0ea5e9", model: "Claude 4.7", anchor: "tl" },
-  { id: "memory", label: "Memory", x: 12, y: 52, color: "#f59e0b", model: "Qwen 3", anchor: "left" },
+/** Lay 9 nodes evenly around the HiveMind core (radius ~38 vu) so labels and connecting
+ *  lines never intersect. Start angle is -90 ° (Strategy directly on top) and we step
+ *  every 40 ° clockwise. Anchor is chosen so the label sits on the outside of each node. */
+type Node = { id: string; label: string; x: number; y: number; color: string; model: string; anchor: Anchor };
+const CIRCLE_RADIUS_VU = 36;
+function placeOnCircle(angleDeg: number): { x: number; y: number; anchor: Anchor } {
+  const rad = (angleDeg * Math.PI) / 180;
+  const x = 50 + CIRCLE_RADIUS_VU * Math.cos(rad);
+  const y = 50 + CIRCLE_RADIUS_VU * Math.sin(rad);
+  // Pick label anchor based on quadrant so the text always extends OUTSIDE the circle.
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  let anchor: Anchor = "right";
+  const absCos = Math.abs(cos);
+  const absSin = Math.abs(sin);
+  if (absSin > absCos * 1.6) anchor = sin > 0 ? "bottom" : "top";
+  else if (absCos > absSin * 1.6) anchor = cos > 0 ? "right" : "left";
+  else if (cos > 0 && sin > 0) anchor = "br";
+  else if (cos > 0 && sin < 0) anchor = "tr";
+  else if (cos < 0 && sin > 0) anchor = "bl";
+  else anchor = "tl";
+  return { x, y, anchor };
+}
+
+// 9 agents @ 40 ° apart, starting at -90 ° (Strategy at top, clockwise).
+const ROLE_RING: { id: string; label: string; color: string; defaultModel: string }[] = [
+  { id: "strategy",     label: "Strategy",     color: "#22d3ee", defaultModel: "GPT-4o" },
+  { id: "research",     label: "Research",     color: "#a855f7", defaultModel: "DeepSeek v3" },
+  { id: "design",       label: "Design",       color: "#3b82f6", defaultModel: "GPT-4.1" },
+  { id: "development",  label: "Development",  color: "#0ea5e9", defaultModel: "Llama 4 70B" },
+  { id: "marketing",    label: "Marketing",    color: "#ec4899", defaultModel: "Llama 4 70B" },
+  { id: "treasury",     label: "Treasury",     color: "#10b981", defaultModel: "Mixtral 8x22B" },
+  { id: "analytics",    label: "Analytics",    color: "#8b5cf6", defaultModel: "DeepSeek v3" },
+  { id: "coordination", label: "Coordination", color: "#67e8f9", defaultModel: "GPT-4.1" },
+  { id: "memory",       label: "Memory",       color: "#f59e0b", defaultModel: "GPT-4o mini" },
 ];
+
+const GRAPH_NODES: Node[] = ROLE_RING.map((r, i) => {
+  const angle = -90 + i * (360 / ROLE_RING.length);
+  const p = placeOnCircle(angle);
+  return { ...r, x: p.x, y: p.y, anchor: p.anchor, model: r.defaultModel };
+});
 
 const center = { x: 50, y: 50 };
 
 function labelOffset(a: Anchor): React.CSSProperties {
-  const out = 14;
+  // Push labels further from the node dot so they don't collide with neighbours when
+  // multiple agents sit close on the ring (e.g. 9-agent crit mission).
+  const out = 18;
   switch (a) {
-    case "top": return { left: "50%", top: -out, transform: "translate(-50%, -100%)" };
+    case "top":    return { left: "50%", top: -out, transform: "translate(-50%, -100%)" };
     case "bottom": return { left: "50%", bottom: -out, transform: "translate(-50%, 100%)" };
-    case "left": return { right: out, top: "50%", transform: "translate(0, -50%)" };
-    case "right": return { left: out, top: "50%", transform: "translate(0, -50%)" };
-    case "tl": return { left: "50%", top: -out, transform: "translate(-50%, -100%)" };
-    case "tr": return { left: "50%", top: -out, transform: "translate(-50%, -100%)" };
-    case "bl": return { left: "50%", bottom: -out, transform: "translate(-50%, 100%)" };
-    case "br": return { left: "50%", bottom: -out, transform: "translate(-50%, 100%)" };
+    case "left":   return { right: out, top: "50%", transform: "translate(0, -50%)" };
+    case "right":  return { left: out,  top: "50%", transform: "translate(0, -50%)" };
+    // Diagonals: nudge BOTH axes so the label clears its neighbour on the same side.
+    case "tl":     return { right: out * 0.6, bottom: out * 0.4, transform: "translate(0, 50%)" };
+    case "tr":     return { left:  out * 0.6, bottom: out * 0.4, transform: "translate(0, 50%)" };
+    case "bl":     return { right: out * 0.6, top:    out * 0.4, transform: "translate(0, -50%)" };
+    case "br":     return { left:  out * 0.6, top:    out * 0.4, transform: "translate(0, -50%)" };
   }
 }
 
@@ -45,19 +71,35 @@ export type CoordGraphProps = {
   selectedAgentNames?: string[];
   /** Short faster pulses while simulating workflow. */
   simulateBurst?: boolean;
+  /** Map of role name → friendly model label (e.g. "GPT-4o" / "Llama 4 70B").
+   *  When provided, overrides each node's default model badge so the graph mirrors the
+   *  Assemble Agent Crew section. */
+  agentModelLabels?: Record<string, string>;
 };
 
 const MIN_ZOOM = 0.6;
 const MAX_ZOOM = 2.4;
 
 export function CoordGraph(props: CoordGraphProps = {}) {
-  const { selectedAgentNames, simulateBurst } = props;
+  const { selectedAgentNames, simulateBurst, agentModelLabels } = props;
+  // Filter the ring down to selected agents, AND re-lay them so the remaining nodes are
+  // evenly spaced. Without re-laying, 3 selected agents would cluster on the original ring
+  // slots and leave huge gaps. Even spacing keeps the graph readable at every roster size.
   const visibleAgents = useMemo(() => {
-    if (!selectedAgentNames?.length) return GRAPH_NODES;
-    const want = new Set(selectedAgentNames.map((s) => s.trim().toLowerCase()));
-    const matched = GRAPH_NODES.filter((n) => want.has(n.label.toLowerCase()));
-    return matched.length > 0 ? matched : GRAPH_NODES;
-  }, [selectedAgentNames]);
+    const base = (() => {
+      if (!selectedAgentNames?.length) return GRAPH_NODES;
+      const want = new Set(selectedAgentNames.map((s) => s.trim().toLowerCase()));
+      const matched = GRAPH_NODES.filter((n) => want.has(n.label.toLowerCase()));
+      return matched.length > 0 ? matched : GRAPH_NODES;
+    })();
+    const n = base.length;
+    return base.map((node, i) => {
+      const angle = -90 + i * (360 / Math.max(1, n));
+      const p = placeOnCircle(angle);
+      const model = agentModelLabels?.[node.label] ?? node.model;
+      return { ...node, x: p.x, y: p.y, anchor: p.anchor, model };
+    });
+  }, [selectedAgentNames, agentModelLabels]);
 
   const flowDuration = simulateBurst ? 1.15 : 3.6;
   const [hover, setHover] = useState<string | null>(null);

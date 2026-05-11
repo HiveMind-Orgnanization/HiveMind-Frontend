@@ -1336,7 +1336,21 @@ export default function MissionCreate() {
                     <span className="text-[10px] uppercase tracking-[0.25em] text-cyan-300">simulating</span>
                   </div>
                   <div className="p-3">
-                    <CoordGraph selectedAgentNames={selected} simulateBurst={simulating} />
+                    <CoordGraph
+                      selectedAgentNames={selected}
+                      simulateBurst={simulating}
+                      agentModelLabels={(() => {
+                        // Build role → "GPT-4o" label map from the current agentModels selection
+                        // so the graph badges mirror the Assemble Agent Crew dropdowns live.
+                        const labels: Record<string, string> = {};
+                        for (const name of selected) {
+                          const id = agentModels[name] ?? UNIFIED_AGENT_MODEL;
+                          const meta = OPENAI_MODELS.find((m) => m.id === id);
+                          labels[name] = meta?.label ?? id;
+                        }
+                        return labels;
+                      })()}
+                    />
                   </div>
                   <div className="grid grid-cols-3 gap-2 border-t border-white/5 p-3 text-center text-[10px]">
                     {[
