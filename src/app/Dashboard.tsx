@@ -14,7 +14,7 @@ import { Particles } from "./components/particles";
 import { TrialBanner } from "./components/TrialBanner";
 import { WalletGate } from "./components/WalletGate";
 import { useMissions } from "./store";
-import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { toast } from "sonner";
 import { apiConfigured, swarmRunMissionApi } from "../lib/api";
 import { labelForModel, resolveAgentModelId } from "../lib/agent-models";
@@ -69,25 +69,6 @@ export default function Dashboard() {
   const paused = active?.status === "paused";
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [accelerating, setAccelerating] = useState(false);
-  // Measure Mission Analytics height with ResizeObserver and apply it as max-height on
-  // Agent Status, so a long agent roster scrolls inside its card instead of growing
-  // the row taller than the analytics sibling. CSS grid stretch alone can't do this —
-  // the row always sizes to the TALLER child.
-  const analyticsRef = useRef<HTMLDivElement | null>(null);
-  const [analyticsH, setAnalyticsH] = useState<number | null>(null);
-  useEffect(() => {
-    const el = analyticsRef.current;
-    if (!el) return;
-    const measure = () => setAnalyticsH(el.offsetHeight);
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    window.addEventListener("resize", measure);
-    return () => {
-      ro.disconnect();
-      window.removeEventListener("resize", measure);
-    };
-  }, []);
   const { agents: apiAgents } = useAgents();
   const { tasks: apiTasks } = useTasks(active?.id ?? null);
   const { metrics: liveMetrics, loading: liveMetricsLoading } = useMissionLiveMetrics(active?.id);
@@ -705,12 +686,14 @@ export default function Dashboard() {
               </div>
             </Card>
 
-            {/* analytics + agent grid. analyticsRef measures Mission Analytics' rendered height
-                and we mirror it onto Agent Status as max-height, so the agent list scrolls
-                inside its card instead of stretching the row taller than the analytics card. */}
-            <div className="mb-6 grid gap-6 xl:grid-cols-3 xl:items-start">
+            {/* analytics + agent grid. CSS-only height match: Agent Status sits inside an
+                xl:relative wrapper and uses xl:absolute xl:inset-0 — that pulls it out of
+                the grid's intrinsic-height calculation, so the row sizes purely to Mission
+                Analytics. The absolute Card then fills the stretched wrapper, and its inner
+                list scrolls because the outer Card now has a real height ceiling. */}
+            <div className="mb-6 grid gap-6 xl:grid-cols-3 xl:items-stretch">
               {/* analytics */}
-              <Card ref={analyticsRef} className="xl:col-span-2">
+              <Card className="xl:col-span-2">
                 <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
                   <div className="flex items-center gap-2 text-sm">
                     <TrendingUp className="h-4 w-4 text-cyan-300" />
@@ -775,13 +758,12 @@ export default function Dashboard() {
                 </div>
               </Card>
 
-              {/* agent status grid — height mirrors Mission Analytics so the list scrolls inside
-                  the card. min-h-0 on the scroller is the standard fix for flex-1 + overflow
-                  inside a flex parent. */}
-              <Card
-                className="flex flex-col"
-                style={analyticsH ? { maxHeight: analyticsH } : undefined}
-              >
+              {/* agent status — wrapper is xl:relative so the absolute Card has a
+                  positioning context; the Card itself stays in normal flow below xl
+                  (mobile layout) and goes absolute only at xl so it can fill the row
+                  height set by Mission Analytics. */}
+              <div className="xl:relative">
+              <Card className="flex flex-col xl:absolute xl:inset-0">
                 <div className="flex shrink-0 items-center justify-between border-b border-white/5 px-5 py-3">
                   <div className="flex items-center gap-2 text-sm">
                     <Cpu className="h-4 w-4 text-cyan-300" />
@@ -849,6 +831,7 @@ export default function Dashboard() {
                   )}
                 </div>
               </Card>
+              </div>
             </div>
           </main>
 
