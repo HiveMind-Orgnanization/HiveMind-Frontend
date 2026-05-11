@@ -295,6 +295,13 @@ export default function Dashboard() {
 
   const displayProgress = liveMetrics?.progressPct ?? active.progress;
   const legacyOps = Math.round(active.progress * 9);
+  // Pause/Accelerate only make sense while the mission is live. Once it's done — either the
+  // status field flipped to "completed" OR every task on the server is done OR the local
+  // progress shows 100% — there's nothing to pause or speed up, so disable the buttons.
+  const missionCompleted =
+    active.status === "completed" ||
+    displayProgress >= 100 ||
+    (liveMetrics != null && liveMetrics.opsTotal > 0 && liveMetrics.opsDone >= liveMetrics.opsTotal);
 
   const pulseSubtitle =
     liveMetrics != null
@@ -416,7 +423,9 @@ export default function Dashboard() {
                             : "All agent activity has been suspended. Click Resume to continue.",
                         });
                       }}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white/80 hover:border-cyan-300/30"
+                      disabled={missionCompleted}
+                      title={missionCompleted ? "Mission is complete — nothing left to pause" : undefined}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white/80 hover:border-cyan-300/30 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-white/10"
                     >
                       {paused
                         ? <Play className="h-3.5 w-3.5 text-cyan-300" />
@@ -447,8 +456,9 @@ export default function Dashboard() {
                           toast.error("Accelerate failed", { description: !res.ok ? res.message : "Could not start swarm run." });
                         }
                       }}
-                      disabled={accelerating}
-                      className="group relative inline-flex items-center gap-2 overflow-hidden rounded-lg px-4 py-2 text-xs text-black disabled:opacity-60"
+                      disabled={accelerating || missionCompleted}
+                      title={missionCompleted ? "Mission is complete — nothing left to accelerate" : undefined}
+                      className="group relative inline-flex items-center gap-2 overflow-hidden rounded-lg px-4 py-2 text-xs text-black disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <span className="absolute inset-0 bg-gradient-to-r from-cyan-300 to-purple-300" />
                       {accelerating
@@ -671,8 +681,10 @@ export default function Dashboard() {
               </div>
             </Card>
 
-            {/* analytics + agent grid */}
-            <div className="mb-6 grid gap-6 xl:grid-cols-3">
+            {/* analytics + agent grid. xl:items-stretch + xl:auto-rows-fr makes both cards share
+                the row height (Mission Analytics defines it via natural content); Agent Status
+                then scrolls internally instead of overflowing the row. */}
+            <div className="mb-6 grid gap-6 xl:grid-cols-3 xl:items-stretch">
               {/* analytics */}
               <Card className="xl:col-span-2">
                 <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
@@ -739,9 +751,11 @@ export default function Dashboard() {
                 </div>
               </Card>
 
-              {/* agent status grid */}
-              <Card>
-                <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
+              {/* agent status grid — flex column so the inner list can take the remaining grid-cell
+                  height. min-h-0 on the scroller is the standard fix for flex-1 + overflow inside
+                  a flex parent. */}
+              <Card className="flex h-full max-h-full min-h-0 flex-col">
+                <div className="flex shrink-0 items-center justify-between border-b border-white/5 px-5 py-3">
                   <div className="flex items-center gap-2 text-sm">
                     <Cpu className="h-4 w-4 text-cyan-300" />
                     Agent Status
@@ -750,7 +764,7 @@ export default function Dashboard() {
                     {dashboardAgents.length > 0 ? `${dashboardAgents.length} online` : "no agents"}
                   </span>
                 </div>
-                <div className="space-y-2 p-3">
+                <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3 hm-scroll">
                   {dashboardAgents.length > 0 ? (
                     dashboardAgents.map((a) => (
                       <motion.div
