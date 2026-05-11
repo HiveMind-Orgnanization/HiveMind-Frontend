@@ -2907,8 +2907,11 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                                 Copy
                               </button>
                             </div>
-                            <pre className="min-h-0 flex-1 overflow-auto p-3 font-mono text-[12px] leading-relaxed text-white/85">
-                              <code>{a.content}</code>
+                            <pre
+                              className="min-h-0 min-w-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[12px] leading-relaxed text-white/85"
+                              style={{ wordBreak: "break-word", overflowWrap: "anywhere" }}
+                            >
+                              <code className="block">{a.content}</code>
                             </pre>
                           </div>
                       );

@@ -217,9 +217,23 @@ export async function swarmRunMissionApi(
     }
 
     let reportedCount = 0;
-    // Poll until done (max 8 minutes, 4-second intervals).
-    for (let i = 0; i < 120; i++) {
-      await new Promise<void>((res) => setTimeout(res, 4000));
+    let lastCurrentRole: string | null | undefined = undefined;
+    // Poll until done (~8 min budget). First few polls are fast (1.5s) so users see the
+    // first agent's name within a couple seconds; then back off to a longer interval.
+    // WebSocket events are unreliable on the Vercel→EB hop, so progress relies on this
+    // poll loop. Without the fast warmup, the chat shows "..." for ~60-90s until the
+    // first agent (Strategy) finishes — bad UX.
+    const FAST_INTERVAL_MS = 1500;
+    const SLOW_INTERVAL_MS = 4000;
+    const FAST_POLLS = 8; // 8 × 1.5s = 12s of fast polling, then back off
+    let elapsedMs = 0;
+    const MAX_MS = 8 * 60_000;
+    let pollIdx = 0;
+    while (elapsedMs < MAX_MS) {
+      const intervalMs = pollIdx < FAST_POLLS ? FAST_INTERVAL_MS : SLOW_INTERVAL_MS;
+      await new Promise<void>((res) => setTimeout(res, intervalMs));
+      elapsedMs += intervalMs;
+      pollIdx += 1;
       const poll = await fetchWithRetryForGateway(
         `/api/missions/${encodeURIComponent(missionId)}/swarm-status/${encodeURIComponent(jobId)}`,
         undefined,
@@ -241,11 +255,15 @@ export async function swarmRunMissionApi(
         error?: string;
         progress?: SwarmProgress;
       };
-      // Emit new partial results since last poll.
+      // Fire onProgress whenever EITHER a new role started (currentRole changed) OR a role
+      // finished (partialResults grew). Previously this only fired on completion, so the
+      // chat looked frozen for 60-90s until Strategy finished.
       if (s.progress && options?.onProgress) {
         const newCount = s.progress.partialResults.length;
-        if (newCount > reportedCount) {
+        const roleChanged = s.progress.currentRole !== lastCurrentRole;
+        if (newCount > reportedCount || roleChanged) {
           reportedCount = newCount;
+          lastCurrentRole = s.progress.currentRole;
           options.onProgress(s.progress);
         }
       }
