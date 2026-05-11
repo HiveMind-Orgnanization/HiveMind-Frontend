@@ -1,7 +1,12 @@
 import { useState, useEffect } from "react";
-import { Zap, Coins, ExternalLink, CheckCircle2, AlertCircle } from "lucide-react";
-import { fetchTrialStatus, fetchTrialConfig, type TrialStatus, type TrialConfig } from "../../lib/api";
-import { useWallet } from "@solana/wallet-adapter-react";
+import { Zap, Coins, ExternalLink, CheckCircle2, AlertCircle, RefreshCw } from "lucide-react";
+import { fetchTrialStatus, fetchTrialConfig, confirmTrialRegister, type TrialStatus, type TrialConfig } from "../../lib/api";
+import { useWallet, useConnection } from "@solana/wallet-adapter-react";
+import {
+  PublicKey, TransactionInstruction, Transaction, SystemProgram,
+  LAMPORTS_PER_SOL,
+} from "@solana/web3.js";
+import { toast } from "sonner";
 
 const EXPLORER_BASE = "https://explorer.solana.com";
 const PROGRAM_ID = "EV447FY9Q7Ty7pFo8wDPFRhkqASmj87GZjFr8CPjQ5om";
@@ -13,14 +18,74 @@ function formatCountdown(nextClaimAt: number): string {
   return `${h}h ${m}m`;
 }
 
+const PROGRAM_ID_PK = new PublicKey("EV447FY9Q7Ty7pFo8wDPFRhkqASmj87GZjFr8CPjQ5om");
+const REGISTER_USER_DISCRIMINATOR = Buffer.from([2, 241, 150, 223, 99, 214, 116, 97]);
+const MIN_LAMPORTS = 0.003 * LAMPORTS_PER_SOL;
+
 export function TrialBanner() {
-  const { publicKey, connected } = useWallet();
+  const { publicKey, connected, sendTransaction } = useWallet();
+  const { connection } = useConnection();
   const [status, setStatus] = useState<TrialStatus | null>(null);
   const [config, setConfig] = useState<TrialConfig | null>(null);
   const [loading, setLoading] = useState(false);
+  const [registering, setRegistering] = useState(false);
   const [countdown, setCountdown] = useState<string | null>(null);
 
   const walletAddr = publicKey?.toBase58() ?? null;
+
+  const handleManualRegister = async () => {
+    if (!publicKey || !sendTransaction || !walletAddr) return;
+    setRegistering(true);
+    try {
+      // Airdrop SOL if needed
+      const balance = await connection.getBalance(publicKey);
+      if (balance < MIN_LAMPORTS) {
+        toast.info("Funding wallet with devnet SOL…", { duration: 5000 });
+        try {
+          const sig = await connection.requestAirdrop(publicKey, 0.01 * LAMPORTS_PER_SOL);
+          const bh = await connection.getLatestBlockhash();
+          await connection.confirmTransaction({ signature: sig, ...bh }, "confirmed");
+        } catch {
+          toast.warning("Airdrop rate-limited — trying registration anyway", { duration: 4000 });
+        }
+      }
+      // Build register_user tx
+      const [userTrialPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("user_trial"), publicKey.toBuffer()], PROGRAM_ID_PK,
+      );
+      const [freeTrialConfigPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("free_trial_config")], PROGRAM_ID_PK,
+      );
+      const ix = new TransactionInstruction({
+        programId: PROGRAM_ID_PK,
+        keys: [
+          { pubkey: publicKey,          isSigner: true,  isWritable: true  },
+          { pubkey: userTrialPda,       isSigner: false, isWritable: true  },
+          { pubkey: freeTrialConfigPda, isSigner: false, isWritable: false },
+          { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        ],
+        data: REGISTER_USER_DISCRIMINATOR,
+      });
+      const tx = new Transaction().add(ix);
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = publicKey;
+      const sig = await sendTransaction(tx, connection);
+      await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+      await confirmTrialRegister(walletAddr);
+      // Refresh status
+      const fresh = await fetchTrialStatus(walletAddr);
+      setStatus(fresh);
+      toast.success("Free trial activated — 10 missions ready!");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.toLowerCase().includes("rejected") && !msg.toLowerCase().includes("cancelled")) {
+        toast.error(`Registration failed: ${msg.slice(0, 100)}`);
+      }
+    } finally {
+      setRegistering(false);
+    }
+  };
 
   useEffect(() => {
     fetchTrialConfig().then(setConfig);
@@ -138,11 +203,26 @@ export function TrialBanner() {
               </div>
             </div>
           ) : (
-            <div className="flex items-center gap-2 rounded-lg border border-amber-300/30 bg-amber-300/[0.06] px-3 py-2.5 text-[11px]">
-              <AlertCircle className="h-3.5 w-3.5 shrink-0 text-amber-300" />
-              <span className="text-amber-200">
-                Wallet not registered — send a <code className="text-amber-300">register_user</code> transaction to activate free trial
-              </span>
+            <div className="space-y-2">
+              <div className="flex items-start gap-2 rounded-lg border border-amber-300/30 bg-amber-300/[0.06] px-3 py-2.5 text-[11px]">
+                <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300" />
+                <span className="text-amber-200">
+                  Wallet not registered — activate your free trial to get 10 missions.
+                </span>
+              </div>
+              <button
+                type="button"
+                disabled={registering || !sendTransaction}
+                onClick={() => void handleManualRegister()}
+                className="flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-300/30 bg-cyan-300/10 py-2 text-[11px] font-semibold text-cyan-200 transition hover:border-cyan-300/50 hover:bg-cyan-300/15 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {registering ? (
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Zap className="h-3.5 w-3.5" />
+                )}
+                {registering ? "Registering…" : "Activate Free Trial"}
+              </button>
             </div>
           )}
         </div>
