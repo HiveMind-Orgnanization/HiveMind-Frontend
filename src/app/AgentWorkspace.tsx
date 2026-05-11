@@ -254,14 +254,25 @@ function buildVerificationBubble(
     cov.docs ? "docs ✓" : null,
   ].filter(Boolean).join(" · ");
 
+  // Friendly heading — hides "verification flagged N issues" jargon from users.
+  const buildFailed = !ok && v.issues.some((i) => /vite build failed|frontend build|build still failing/i.test(i));
+  const heading = ok
+    ? `✅ All checks passed — ${v.artifactPathCount} files delivered`
+    : buildFailed
+      ? `⚠️ The preview build needs another pass — ${v.artifactPathCount} files generated, but the agents couldn't finish auto-fixing in time`
+      : `⚠️ Quality review found some things to polish (${v.artifactPathCount} files generated)`;
   const lines: string[] = [
-    ok ? `✅ All checks passed — ${v.artifactPathCount} files delivered` : `⚠️ Needs revision · ${v.summary}`,
+    heading,
     "",
     `**Coverage:** ${covLines}`,
   ];
-  if (!ok && v.issues.length > 0) {
-    lines.push("", "**Issues found:**");
-    for (const issue of v.issues.slice(0, 8)) lines.push(`- ${issue}`);
+  if (!ok) {
+    lines.push(
+      "",
+      "**What you can do:**",
+      "- Reply in chat with a follow-up like “fix the Tailwind setup” or “simplify the file structure” — the agents will keep iterating.",
+      "- Click _Activity_ to see the technical details from the verifier and build log.",
+    );
   }
 
   return {
@@ -1087,6 +1098,10 @@ function buildSandpackFiles(artifacts: MissionArtifact[]): {
     let rel = hasFe ? art.path.replace(/^frontend\//, "") : art.path;
     const fname = rel.split("/").pop() ?? "";
     if (SANDPACK_SKIP_FILES.has(fname)) continue;
+    // Agents sometimes emit malformed double-extension paths like `index.css.tsx` or
+    // `styles.scss.tsx` — Sandpack tries to parse them as TS and crashes the bundle.
+    // Drop these; the matching real file (index.css) is already included separately.
+    if (/\.(css|scss|sass|less|html|json|md|svg|png|jpg|jpeg|gif|webp|ico)\.(tsx?|jsx?)$/i.test(fname)) continue;
 
     if (rel === "package.json") {
       try {
@@ -1208,6 +1223,12 @@ function SandpackErrorMonitor({ onErrors }: { onErrors: (errs: string[]) => void
       const t = text.toLowerCase();
       // React Router "future flag" warnings are advisory only — never trigger a repair from them.
       if (/react router future flag warning/.test(t)) return false;
+      // React's "Consider adding an error boundary" advice line — informational, not actionable.
+      if (/consider adding an error boundary/.test(t)) return false;
+      // React's "Provider initialization" log is from the app itself, not an error.
+      if (/provider initialization/.test(t)) return false;
+      // Tailwind CDN warning is informational only.
+      if (/cdn\.tailwindcss\.com should not be used in production/.test(t)) return false;
       return (
         /cannot use ['"]?import\.meta['"]?/.test(t) ||
         /uncaught (syntaxerror|referenceerror|typeerror)/.test(t) ||
@@ -1226,7 +1247,10 @@ function SandpackErrorMonitor({ onErrors }: { onErrors: (errs: string[]) => void
         /cannot destructure propert(y|ies)/.test(t) ||
         /maximum update depth exceeded/.test(t) ||
         /objects are not valid as a react child/.test(t) ||
-        /(invalid|missing) hook call/.test(t)
+        /(invalid|missing) hook call/.test(t) ||
+        /an error occurred in the <[\w.]+> component/.test(t) ||
+        /^typeerror:/.test(t) ||
+        /^error:/.test(t)
       );
     };
 
@@ -1434,6 +1458,10 @@ function SandpackLivePreview({
           <SandpackFrame
             showOpenInCodeSandbox={false}
             showRefreshButton
+            // Hide Sandpack's built-in error overlay (the strip that prints raw `cdn.tailwindcss.com`,
+            // `<StrictMode>` advice, `Provider initialization` console logs at the bottom of the iframe).
+            // Real errors are caught by SandpackErrorMonitor and surfaced as a friendly amber notice below.
+            showSandpackErrorOverlay={false}
             style={{ width: "100%", height: `${Math.max(200, frameHeight - 24)}px` }}
           />
         </SandpackProvider>
@@ -2279,10 +2307,21 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
           },
         ].slice(-200));
         if (!data.verification?.ok) {
-          toast.warning("Swarm complete · verification flagged issues", {
-            description: (data.verification?.issues ?? []).join(" · "),
-            duration: 12_000,
-          });
+          const issues = data.verification?.issues ?? [];
+          const buildFailed = issues.some((i) => /vite build failed|frontend build|build still failing/i.test(i));
+          // Surface a clean, user-friendly toast. Full technical details are still saved in
+          // the agent activity log for power users.
+          toast.warning(
+            buildFailed
+              ? "Preview build needs another pass"
+              : "Code quality check flagged some issues",
+            {
+              description: buildFailed
+                ? "The agents tried to fix the build but couldn't finish in time. Send a follow-up in chat (e.g. 'fix the Tailwind setup' or 'simplify the file structure') and they'll keep iterating."
+                : "Open the Activity drawer to review the details, or ask the agents in chat to address them.",
+              duration: 12_000,
+            },
+          );
         }
       }
 
