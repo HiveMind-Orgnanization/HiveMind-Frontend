@@ -76,6 +76,59 @@ type LogLine = { ts: number; agent: string; message: string };
 
 const SWARM_FEED_REPLY_CHARS = 2800;
 
+/**
+ * Turn a raw LLM reply (which is often a full markdown spec or a JSON blob) into a brief
+ * "I did X — Y agent, your turn" narrative for the live agent-thought panel. We want the
+ * UI to read like a team handoff, not a dump of the agent's working notes.
+ */
+function summarizeAgentHandoff(args: {
+  role: string;
+  reply: string;
+  nextRole?: string | null;
+  artifactPaths?: string[];
+}): string {
+  const role = args.role;
+  const next = args.nextRole && args.nextRole !== role ? args.nextRole : null;
+  const paths = args.artifactPaths ?? [];
+  const reply = (args.reply ?? "").trim();
+
+  /** Per-role one-liner describing what just got done. */
+  const ROLE_DID: Record<string, string> = {
+    Strategy: "locked in the protocol type, scope and core components",
+    Research: "summarized the competitive landscape and best practices",
+    Design: "shipped the UI/UX spec — layout, palette, components",
+    Development: "wrote the frontend and backend source files",
+    Marketing: "drafted the go-to-market plan and copy",
+    Treasury: "set budget splits and on-chain escrow controls",
+    Analytics: "defined KPIs, event schema and monitoring",
+    Coordination: "stitched every agent's output into the final repo",
+    Memory: "indexed mission context for future agents",
+  };
+
+  // Prefer model-provided summary when present (assistantReply / summary inside JSON).
+  let modelSummary = "";
+  if (reply.startsWith("{")) {
+    try {
+      const j = JSON.parse(reply) as { assistantReply?: string; summary?: string };
+      const cand = (j.assistantReply || j.summary || "").trim();
+      if (cand && cand.length < 240) modelSummary = cand;
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const action = modelSummary || `${role} ${ROLE_DID[role] ?? "finished its task"}`;
+
+  const fileNote =
+    paths.length > 0
+      ? ` Saved ${paths.length} file${paths.length === 1 ? "" : "s"}${paths.length <= 3 ? ` (${paths.slice(0, 3).join(", ")})` : ""}.`
+      : "";
+
+  const handoff = next ? ` Handing off to ${next} — your turn.` : "";
+
+  return `${action}.${fileNote}${handoff}`.replace(/\.+/g, ".").trim();
+}
+
 
 /** Produces a realistic inter-agent coordination dialogue for the reasoning log. */
 function generateCoordinationScript(agents: string[], request: string) {
@@ -829,12 +882,12 @@ function HiveMindSwarmBubble({ m }: { m: ChatMsg }) {
                   ))}
                   {!done && (
                     <motion.div
-                      animate={{ opacity: [0.2, 0.7, 0.2] }}
+                      animate={{ opacity: [0.55, 1, 0.55] }}
                       transition={{ duration: 1.5, repeat: Infinity }}
-                      className="flex items-center gap-1.5 text-[11px] text-white/22"
+                      className="flex items-center gap-1.5 text-[11.5px] text-cyan-200/80"
                     >
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                      <span>Coordinating…</span>
+                      <Loader2 className="h-3 w-3 animate-spin text-cyan-300" />
+                      <span>Coordinating with the next agent…</span>
                     </motion.div>
                   )}
                 </div>
@@ -1773,15 +1826,34 @@ function AgentWorkspaceMissionBody({
           const meta = ALL_AGENTS.find((a) => a.name === agentName);
           const color = meta?.color ?? "#10b981";
           setActiveAgent(null);
-          // Mark that thought as done in the HiveMind bubble
+          // Mark that thought as done in the HiveMind bubble AND rewrite the text into a
+          // friendly handoff summary (the WS [done] event itself doesn't carry a reply, so
+          // we synthesize from the role; onProgress will overwrite with the model summary
+          // once polling catches up if the reply contains an assistantReply field).
           const hmId = hivemindMsgIdRef.current;
           if (hmId !== null) {
+            // Find the role of this agent from the chat msg context (resolveAgentId reverse).
+            const role = ALL_AGENTS.find((a) => a.name === agentName)?.specialization
+              ?? agentName;
+            const doneSummary = summarizeAgentHandoff({ role, reply: "" });
             setMessages((prev) => prev.map((msg) => {
               if (msg.id !== hmId) return msg;
               return {
                 ...msg,
                 thoughts: (msg.thoughts ?? []).map((t) =>
-                  t.agent === agentName ? { ...t, done: true, color } : t,
+                  t.agent === agentName
+                    ? {
+                        ...t,
+                        done: true,
+                        color,
+                        // Only overwrite when the current text still looks like raw markdown
+                        // (starts with ###/-/*) or the in-progress placeholder.
+                        text:
+                          /^(###|\*|-|\{)/.test(t.text.trim()) || /is (analysing|working)/.test(t.text)
+                            ? doneSummary
+                            : t.text,
+                      }
+                    : t,
                 ),
               };
             }));
@@ -2165,7 +2237,15 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
               if (msg.id !== hmId) return msg;
               let thoughts = (msg.thoughts ?? []).map((t) =>
                 !t.done && lastResult && t.agent === lastResult.role
-                  ? { ...t, text: lastResult.replySnippet.slice(0, 300) || t.text, done: true }
+                  ? {
+                      ...t,
+                      text: summarizeAgentHandoff({
+                        role: lastResult.role,
+                        reply: lastResult.replySnippet,
+                        nextRole: progress.currentRole,
+                      }),
+                      done: true,
+                    }
                   : t,
               );
               // Add new working entry for the current role if not already tracked
@@ -2258,16 +2338,26 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
       const coordBody = buildCoordinationDeliverableText(data, finalText || "Swarm run finished.");
 
       // Build final thought list from all results, all marked done (includes file paths).
-      const finalThoughts: ChatThought[] = data.results
-        .filter((r) => r.role !== "Coordination")
-        .map((r) => ({
+      // Use the handoff summarizer so the chat reads like team coordination, not raw markdown.
+      const nonCoordResults = data.results.filter((r) => r.role !== "Coordination");
+      const finalThoughts: ChatThought[] = nonCoordResults.map((r, i) => {
+        const nextRole = nonCoordResults[i + 1]?.role ?? "Coordination";
+        return {
           agent: r.role,
           color: ROLE_COLORS[r.role] ?? "#94a3b8",
-          text: (r.reply ?? "").trim().slice(0, 260) || r.error?.slice(0, 260) || `${r.role} completed.`,
+          text: r.error
+            ? `${r.role} hit an error: ${r.error.slice(0, 180)}`
+            : summarizeAgentHandoff({
+                role: r.role,
+                reply: r.reply ?? "",
+                nextRole,
+                artifactPaths: Array.isArray(r.artifactPaths) ? r.artifactPaths : [],
+              }),
           ts: ts2,
           done: true,
           files: Array.isArray(r.artifactPaths) ? r.artifactPaths.slice(0, 10) : [],
-        }));
+        };
+      });
 
       hivemindMsgIdRef.current = null;
       // Update the HiveMind bubble to its final approved state.
