@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Link, useLocation } from "react-router";
+import { useWallet } from "@solana/wallet-adapter-react";
 import {
   Radio, Users, Wallet, Award, Brain, Store, BarChart3, Terminal, UsersRound, Settings,
-  PanelLeftClose, PanelLeftOpen, Zap,
+  PanelLeftClose, PanelLeftOpen, Zap, Loader2,
 } from "lucide-react";
 import { fetchTrialStatus } from "../../../lib/api";
 
@@ -24,20 +25,44 @@ export function Sidebar() {
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem("hm-sidebar-collapsed") === "1"
   );
-  const [trialUses, setTrialUses] = useState<number | null>(null);
+  type CreditsState = { kind: "hidden" } | { kind: "activating" } | { kind: "ready"; uses: number };
+  const [credits, setCredits] = useState<CreditsState>({ kind: "hidden" });
+  const { publicKey } = useWallet();
+  const walletAddress = publicKey?.toBase58() ?? null;
   const location = useLocation();
   const isActive = (to: string) =>
     to === "/dashboard"
       ? location.pathname === "/dashboard" || location.pathname.startsWith("/missions")
       : location.pathname.startsWith(to);
 
+  // Re-fetch trial status whenever the wallet changes (was using a stale localStorage read
+  // with an empty effect-dep array, so connecting to a fresh wallet showed the OLD wallet's
+  // remaining credits — usually 0 after the old one was used up). For unregistered wallets,
+  // useAutoRegisterTrial is mid-flight: surface an "Activating…" state and poll briefly.
   useEffect(() => {
-    const wallet = localStorage.getItem("hm-connected-wallet");
-    if (!wallet) return;
-    fetchTrialStatus(wallet).then((s) => {
-      if (s?.registered) setTrialUses(s.usesRemaining);
-    });
-  }, []);
+    if (!walletAddress) { setCredits({ kind: "hidden" }); return; }
+    let cancelled = false;
+    let pollHandle: ReturnType<typeof setTimeout> | null = null;
+    let attempts = 0;
+    const tick = async () => {
+      attempts += 1;
+      const s = await fetchTrialStatus(walletAddress);
+      if (cancelled) return;
+      if (s?.registered) {
+        setCredits({ kind: "ready", uses: s.usesRemaining });
+        return;
+      }
+      // Not registered yet — auto-register may still be in flight. Show "Activating…" and
+      // poll every 3 s for up to ~45 s.
+      setCredits({ kind: "activating" });
+      if (attempts < 15) pollHandle = setTimeout(tick, 3000);
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+      if (pollHandle) clearTimeout(pollHandle);
+    };
+  }, [walletAddress]);
 
   const toggle = () => {
     setCollapsed((c) => {
@@ -175,13 +200,20 @@ export function Sidebar() {
           >
             <div className="text-[10px] uppercase tracking-[0.3em] text-cyan-300">system</div>
             <div className="mt-2 text-sm text-white/85">All systems nominal</div>
-            {trialUses !== null && (
+            {credits.kind !== "hidden" && (
               <Link to="/trial" className="mt-3 flex items-center justify-between rounded-lg border border-cyan-300/20 bg-cyan-300/[0.06] px-2.5 py-2 text-[10px] hover:border-cyan-300/40">
                 <div className="flex items-center gap-1.5 text-white/60">
                   <Zap className="h-3 w-3 text-cyan-300" />
                   Free Credits
                 </div>
-                <span className="tabular-nums text-cyan-300">{trialUses}/5 daily</span>
+                {credits.kind === "activating" ? (
+                  <span className="flex items-center gap-1 text-cyan-300/80">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Activating…
+                  </span>
+                ) : (
+                  <span className="tabular-nums text-cyan-300">{credits.uses}/5 daily</span>
+                )}
               </Link>
             )}
           </motion.div>
