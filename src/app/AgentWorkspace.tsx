@@ -54,6 +54,8 @@ type ChatThought = {
   ts: string;
   done: boolean;
   files?: string[];
+  /** Per-file line counts (added/removed) for an in-bubble "diff summary". */
+  fileDiffs?: { path: string; added: number; removed: number }[];
 };
 
 type ChatMsg = {
@@ -783,7 +785,20 @@ function HiveMindThought({ t }: { t: ChatThought }) {
         </p>
       )}
 
-      {t.files && t.files.length > 0 && (
+      {t.fileDiffs && t.fileDiffs.length > 0 ? (
+        <div className="mt-2 pl-[26px] space-y-[4px]">
+          {t.fileDiffs.slice(0, 10).map((d, i) => (
+            <div key={i} className="flex items-center gap-2 font-mono text-[10.5px]">
+              <span className="text-white/45 truncate">{d.path}</span>
+              {d.added > 0 && <span className="text-emerald-400 tabular-nums">+{d.added}</span>}
+              {d.removed > 0 && <span className="text-rose-400 tabular-nums">-{d.removed}</span>}
+            </div>
+          ))}
+          {t.fileDiffs.length > 10 && (
+            <p className="text-[10px] text-white/30">+{t.fileDiffs.length - 10} more files</p>
+          )}
+        </div>
+      ) : t.files && t.files.length > 0 && (
         <div className="mt-1.5 pl-[26px] space-y-[3px]">
           {t.files.slice(0, 8).map((f, i) => (
             <div key={i} className="flex items-center gap-1.5 font-mono text-[10.5px]">
@@ -798,6 +813,28 @@ function HiveMindThought({ t }: { t: ChatThought }) {
       )}
     </motion.div>
   );
+}
+
+/** Count added/removed lines per file from a before-and-after content snapshot. */
+function diffLineCounts(beforeMap: Map<string, string>, afterByPath: Record<string, string>): { path: string; added: number; removed: number }[] {
+  const out: { path: string; added: number; removed: number }[] = [];
+  for (const [path, after] of Object.entries(afterByPath)) {
+    const before = beforeMap.get(path) ?? "";
+    const a = before.split("\n");
+    const b = after.split("\n");
+    // Cheap diff: count lines unique to each side.
+    const beforeSet = new Map<string, number>();
+    for (const ln of a) beforeSet.set(ln, (beforeSet.get(ln) ?? 0) + 1);
+    let added = 0;
+    for (const ln of b) {
+      const c = beforeSet.get(ln) ?? 0;
+      if (c > 0) beforeSet.set(ln, c - 1);
+      else added += 1;
+    }
+    const removed = [...beforeSet.values()].reduce((s, n) => s + Math.max(0, n), 0);
+    out.push({ path, added, removed });
+  }
+  return out;
 }
 
 /** Main HiveMind message — Claude-style with live timer, thought chain, and final reply. */
@@ -1519,19 +1556,9 @@ function SandpackLivePreview({
             style={{ width: "100%", height: `${Math.max(200, frameHeight - 24)}px` }}
           />
         </SandpackProvider>
-        {hasFatalError && !autoFixing && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center px-4 pb-4">
-            <div className="pointer-events-auto flex max-w-md items-start gap-3 rounded-xl border border-amber-300/30 bg-[#1a1407]/90 px-4 py-3 text-xs text-amber-100/90 shadow-lg backdrop-blur">
-              <Sparkles className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-300" aria-hidden />
-              <div className="space-y-1">
-                <div className="font-medium text-amber-100">Preview hit a snag</div>
-                <div className="text-amber-100/70">
-                  The agents are looking at it now. If it doesn’t recover in a moment, try sending a follow-up message in chat.
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
+        {/* No floating overlay here — the auto-fix flow now narrates progress in the chat
+            (Development bubble with retry thoughts + green/red diff counts). Avoids the
+            "Preview hit a snag" floating card that duplicated the same information. */}
       </div>
     </div>
   );
@@ -1960,6 +1987,9 @@ function AgentWorkspaceMissionBody({
     return null;
   };
 
+  // Track the current auto-fix bubble so subsequent retries append into the same one.
+  const autoFixBubbleIdRef = useRef<number | null>(null);
+
   const handlePreviewAutoFix = useCallback(async (errors: string[]) => {
     const MAX_ATTEMPTS = 5;
     if (previewAutoFixAttemptsRef.current >= MAX_ATTEMPTS) return;
@@ -1970,9 +2000,85 @@ function AgentWorkspaceMissionBody({
       resolveAgentId("Development") ??
       resolveAgentId("Design") ??
       resolveAgentId("Strategy");
-    if (!devAgentId) { toast.error("No agent available to auto-fix preview"); return; }
+    if (!devAgentId) {
+      // No agent available — drop a quiet system bubble (still better than a toast).
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now(),
+          agent: "HiveMind",
+          color: "#f59e0b",
+          text: "Preview hit an error but no agent is available to repair it.",
+          state: "failed",
+          kind: "system_warn",
+          ts: new Date().toLocaleTimeString("en-US", { hour12: false }),
+        },
+      ]);
+      return;
+    }
 
     setPreviewAutoFixing(true);
+    const errText0 = errors.slice(0, 6).join("\n");
+    const shortErr = errText0.split("\n")[0]?.slice(0, 140) ?? "Preview error";
+    const devColor = ALL_AGENTS.find((a) => a.name === "Development")?.color ?? "#22d3ee";
+
+    // First attempt → spawn a fresh "Oh no, hit an error" bubble. Later attempts append a thought
+    // into the same bubble so the user sees one cohesive narrative, not five duplicate cards.
+    let bubbleId = autoFixBubbleIdRef.current;
+    if (attempt === 1 || bubbleId === null) {
+      bubbleId = Date.now() + Math.floor(Math.random() * 9999);
+      autoFixBubbleIdRef.current = bubbleId;
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: bubbleId!,
+          agent: "HiveMind",
+          color: "#22d3ee",
+          text: "",
+          state: "thinking",
+          kind: "hivemind_swarm",
+          ts: new Date().toLocaleTimeString("en-US", { hour12: false }),
+          thoughts: [
+            {
+              agent: "HiveMind",
+              color: "#22d3ee",
+              text: `Preview crashed: ${shortErr}`,
+              ts: new Date().toLocaleTimeString("en-US", { hour12: false }),
+              done: true,
+            },
+            {
+              agent: "Development",
+              color: devColor,
+              text: `Reading the broken files and patching…`,
+              ts: new Date().toLocaleTimeString("en-US", { hour12: false }),
+              done: false,
+            },
+          ],
+        },
+      ]);
+    } else {
+      // Append a new in-progress Development thought for this retry.
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id !== bubbleId
+            ? m
+            : {
+                ...m,
+                state: "thinking",
+                thoughts: [
+                  ...(m.thoughts ?? []),
+                  {
+                    agent: "Development",
+                    color: devColor,
+                    text: `Retry ${attempt} — different angle…`,
+                    ts: new Date().toLocaleTimeString("en-US", { hour12: false }),
+                    done: false,
+                  },
+                ],
+              },
+        ),
+      );
+    }
 
     // Extract file paths mentioned in the errors (e.g. /src/main.tsx → look up in artifacts)
     const errorPaths = new Set<string>();
@@ -2102,7 +2208,8 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
   ]
 }`;
 
-    toast.info(`Auto-fixing preview (attempt ${attempt}/${MAX_ATTEMPTS})…`, { duration: 3000 });
+    // Snapshot file contents before the invoke so we can compute per-file +/- line counts.
+    const beforeMap = new Map(artifacts.map((a) => [a.path, a.content ?? ""]));
 
     const result = await invokeAgentApi(devAgentId, {
       message,
@@ -2111,23 +2218,70 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
       includeArtifacts: false, // we already inlined the files above
     });
 
+    // Helper: update the most recent in-flight Development thought in our bubble with a result.
+    const updateLastDevThought = (patch: Partial<ChatThought>) => {
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id !== bubbleId) return m;
+          const thoughts = [...(m.thoughts ?? [])];
+          for (let i = thoughts.length - 1; i >= 0; i--) {
+            if (thoughts[i]!.agent === "Development" && !thoughts[i]!.done) {
+              thoughts[i] = { ...thoughts[i]!, done: true, ...patch };
+              break;
+            }
+          }
+          return { ...m, thoughts };
+        }),
+      );
+    };
+
+    const finalizeBubble = (state: "approved" | "failed", text: string) => {
+      autoFixBubbleIdRef.current = null;
+      setMessages((prev) =>
+        prev.map((m) => (m.id === bubbleId ? { ...m, state, text } : m)),
+      );
+    };
+
     if (result.ok) {
       if (!result.persistArtifactParseFailed && result.artifactPathsApplied?.length) {
         const fresh = await fetchMissionArtifactsApi(mission.id);
         if (fresh) {
           setArtifacts(fresh);
           previewAutoFixAttemptsRef.current = 0; // reset on success so future errors get 5 fresh tries
-          toast.success(`Preview fixed — updated: ${result.artifactPathsApplied.join(", ")}`, { duration: 4000 });
+          // Build per-file diff counts and surface them in the dev thought + final bubble text.
+          const afterByPath: Record<string, string> = {};
+          for (const p of result.artifactPathsApplied) {
+            const row = fresh.find((a) => a.path === p);
+            if (row) afterByPath[p] = row.content ?? "";
+          }
+          const fileDiffs = diffLineCounts(beforeMap, afterByPath);
+          const totalAdded = fileDiffs.reduce((s, d) => s + d.added, 0);
+          const totalRemoved = fileDiffs.reduce((s, d) => s + d.removed, 0);
+          updateLastDevThought({
+            text: `Patched ${result.artifactPathsApplied.length} file${result.artifactPathsApplied.length === 1 ? "" : "s"} (+${totalAdded} / -${totalRemoved} lines).`,
+            fileDiffs,
+          });
+          finalizeBubble(
+            "approved",
+            `Preview repaired — ${result.artifactPathsApplied.length} file${result.artifactPathsApplied.length === 1 ? "" : "s"} updated (+${totalAdded} / -${totalRemoved} lines).`,
+          );
         }
       } else if (result.persistArtifactParseFailed) {
-        // Agent replied but JSON was malformed — the 30-s re-fire window in SandpackErrorMonitor
-        // will trigger another attempt automatically.
-        toast.warning(`Auto-fix attempt ${attempt}: response wasn't valid JSON, retrying…`, { duration: 3500 });
+        // Response truncated/malformed — the SandpackErrorMonitor re-fire window will retry.
+        updateLastDevThought({ text: `Attempt ${attempt}: the patch came back malformed. Retrying with a tighter prompt…` });
       } else {
-        toast.warning(`Auto-fix attempt ${attempt}: agent responded with no file changes`, { duration: 3500 });
+        updateLastDevThought({ text: `Attempt ${attempt}: agent didn't return file changes. Retrying…` });
       }
     } else {
-      toast.error(`Auto-fix attempt ${attempt} failed (${result.reason}) — will retry`);
+      // Network / gateway error — distinct from the agent giving up. Keep bubble open for retry.
+      updateLastDevThought({ text: `Attempt ${attempt} couldn't reach the backend (${result.reason}). Will retry shortly.` });
+    }
+
+    if (previewAutoFixAttemptsRef.current >= MAX_ATTEMPTS && autoFixBubbleIdRef.current === bubbleId) {
+      finalizeBubble(
+        "failed",
+        `Spent ${MAX_ATTEMPTS} attempts on this error without converging. Send a follow-up in chat with more context and I'll try again.`,
+      );
     }
     setPreviewAutoFixing(false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
