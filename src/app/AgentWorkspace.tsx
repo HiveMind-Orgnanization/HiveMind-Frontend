@@ -957,6 +957,30 @@ const SANDPACK_SKIP_DEPS = new Set([
   "@types/react", "@types/react-dom", "@types/node",
 ]);
 
+/** LLMs hallucinate npm package names — fix the common ones before handing to Sandpack CDN. */
+const PKG_ALIASES: Record<string, string> = {
+  "@lucide/react": "lucide-react",
+  "lucide/react": "lucide-react",
+  "@radix/react-icons": "@radix-ui/react-icons",
+  "@heroicons/react": "heroicons",
+  "framer": "framer-motion",
+  "react-query": "@tanstack/react-query",
+  "@shadcn/ui": "",
+  "shadcn-ui": "",
+};
+
+function normalizeDeps(deps: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, ver] of Object.entries(deps)) {
+    if (SANDPACK_SKIP_DEPS.has(name)) continue;
+    const alias = PKG_ALIASES[name];
+    if (alias === "") continue; // remove entirely
+    if (alias) { out[alias] = out[alias] ?? ver; continue; }
+    out[name] = ver;
+  }
+  return out;
+}
+
 /** Resolve @/ path alias to relative paths (Vite convention: @/ → /src/). */
 function resolveAtAlias(code: string, sp: string): string {
   const dir = sp.replace(/\/[^/]+$/, ""); // e.g. /src/components
@@ -996,8 +1020,7 @@ function buildSandpackFiles(artifacts: MissionArtifact[]): {
     if (rel === "package.json") {
       try {
         const pkg = JSON.parse(art.content) as { dependencies?: Record<string, string> };
-        dependencies = { ...pkg.dependencies };
-        for (const d of SANDPACK_SKIP_DEPS) delete dependencies[d];
+        dependencies = normalizeDeps({ ...(pkg.dependencies ?? {}) });
       } catch { /* ignore */ }
       continue;
     }
