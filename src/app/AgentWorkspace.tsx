@@ -2457,9 +2457,28 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
       return;
     }
 
-    const agentsToInvoke = (mission.agents && mission.agents.length > 0)
+    // Follow-up chat messages almost always need code changes (e.g. "implement the leaderboard").
+    // Putting Strategy/Research first means we pay 60-90s for advisory text before any code lands.
+    // Reorder so Development leads (it's the only role that actually edits files), then Design /
+    // Coordination, then the rest. Without this, Strategy's truncated reply would stop the chain
+    // and the user sees raw JSON from a non-code agent.
+    const baseAgents = (mission.agents && mission.agents.length > 0)
       ? mission.agents
       : [selectedAgent];
+    const ROLE_PRIORITY: Record<string, number> = {
+      Development: 0,
+      Coordination: 1,
+      Design: 2,
+      Strategy: 3,
+      Research: 4,
+      Marketing: 5,
+      Treasury: 6,
+      Analytics: 7,
+      Memory: 8,
+    };
+    const agentsToInvoke = [...baseAgents].sort(
+      (a, b) => (ROLE_PRIORITY[a] ?? 99) - (ROLE_PRIORITY[b] ?? 99),
+    );
 
     // 2. Insert HiveMind bubble in thinking state
     const thinkingId = Date.now() * 1000 + Math.floor(Math.random() * 999) + 1;
@@ -2616,10 +2635,36 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
       const ts2 = new Date().toLocaleTimeString("en-US", { hour12: false });
       const thinkingLog = script.map((e) => e.log);
 
-      // 6. Synthesize all agent replies into one Coordination summary via a final agent call
-      let finalReply = results.length > 0
-        ? results.map((r) => r.reply).join("\n\n")
-        : "No agents were available to process this request.";
+      // 6. Synthesize all agent replies into one Coordination summary via a final agent call.
+      // Cleanse raw JSON dumps (truncated `persistArtifactUpdates` responses) — pull out only
+      // the human-readable `assistantReply` field, or fall back to a generic note. We never
+      // want the user to see `{"assistantReply":"…","fileUpdates":[{...}]}` in chat.
+      const humanizeReply = (raw: string): string => {
+        const t = (raw ?? "").trim();
+        if (!t) return "";
+        if (t.startsWith("{")) {
+          try {
+            const j = JSON.parse(t) as { assistantReply?: string; summary?: string };
+            const s = (j.assistantReply || j.summary || "").trim();
+            if (s) return s;
+          } catch {
+            // Truncated JSON — try a regex extract of "assistantReply":"…"
+            const m = t.match(/"assistantReply"\s*:\s*"((?:[^"\\]|\\.)*?)"/s);
+            if (m && m[1]) return m[1].replace(/\\n/g, "\n").replace(/\\"/g, '"');
+          }
+          // Couldn't extract anything readable from a JSON-shaped reply.
+          return "";
+        }
+        return t;
+      };
+      const cleanReplies = results
+        .map((r) => humanizeReply(r.reply))
+        .filter((s) => s.length > 0);
+      let finalReply = cleanReplies.length > 0
+        ? cleanReplies.join("\n\n")
+        : results.length > 0 && !anyFilesWritten
+          ? "My response was cut off before I could apply file changes. Try sending the same request again — the agents will pick up from where they left off."
+          : "No agents were available to process this request.";
 
       if (anyFilesWritten && results.length > 1) {
         const coordAgentId =
