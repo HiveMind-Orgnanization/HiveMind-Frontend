@@ -2517,16 +2517,26 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
       // Snapshot artifact contents before invoking (for diff stats later)
       const artifactsBefore = new Map(artifacts.map((a) => [a.path, a.content ?? ""]));
 
-      // Smart prompt: the agent decides whether code changes are needed.
-      // If needed → JSON with fileUpdates. If conversational → plain text.
-      const smartPrompt =
-        `You are the {AGENT} agent in a multi-agent AI team working on a software project.\n` +
-        `The user said: "${text}"\n\n` +
-        `IMPORTANT: Look at this message and decide:\n` +
-        `• If the user is asking a question, making conversation, or saying something that does NOT require writing or modifying code — reply in plain conversational text.\n` +
-        `• If the user is asking you to write, edit, fix, create, improve, or update any code or files — respond ONLY in this JSON format:\n` +
-        `  {"assistantReply":"concise summary of changes","fileUpdates":[{"path":"relative/path","language":"typescript","content":"complete file content"}]}\n` +
-        `Do NOT default to code output. Only produce fileUpdates when the user's message clearly requires it.`;
+      // Strong signal: imperative verbs mean the user wants code changes, not advice.
+      const looksLikeCodeRequest = /\b(implement|add|build|create|fix|update|change|wire|hook|integrate|refactor|rewrite|edit|modify|delete|remove|rename|extend|complete|finish|continue)\b/i.test(text);
+
+      const smartPrompt = looksLikeCodeRequest
+        ? `You are the {AGENT} agent in a multi-agent AI team building a real, runnable software project.\n` +
+          `The user said: "${text}"\n\n` +
+          `This is an IMPLEMENTATION request — the user expects working code, not a design doc or specification.\n\n` +
+          `RULES:\n` +
+          `1. Respond with EXACTLY ONE JSON object — no prose, no markdown fences, no commentary outside the JSON.\n` +
+          `2. Shape: {"assistantReply":"1-2 sentence human summary of what you wrote","fileUpdates":[{"path":"frontend/src/...","language":"tsx","content":"COMPLETE file body, no truncation, no ellipsis, no '...rest unchanged' placeholders"}]}\n` +
+          `3. fileUpdates MUST contain at least one .ts/.tsx/.js/.jsx/.css file under frontend/, backend/, or design/ — never just notes/ or design/ markdown.\n` +
+          `4. For each file you include, the content field is the ENTIRE final file body. Sandpack/Vite replaces the whole file with what you send.\n` +
+          `5. Build minimal but functional code. Use React hooks (useState/useEffect), Tailwind utility classes for styling.\n` +
+          `6. If the request is about a UI feature (e.g. a leaderboard), ship the React component + wire it into App.tsx so it actually renders.\n` +
+          `7. Do not write code into notes/*.md or design/*.md. Code goes in frontend/src/.\n` +
+          `8. Never use \`import.meta.env\` in chat-driven edits (Sandpack preview can't parse it).`
+        : `You are the {AGENT} agent in a multi-agent AI team working on a software project.\n` +
+          `The user said: "${text}"\n\n` +
+          `This looks conversational. Reply in plain text — answer the question, ask clarifying questions if needed.\n` +
+          `Do NOT produce JSON or fileUpdates unless the user clearly asks for code changes.`;
 
       // 4. Call the first agent. If it decides the request needs code, invoke all agents.
       //    If it responds in plain text, that's the final answer — skip the rest.
@@ -2538,13 +2548,19 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
       const addThought = (name: string, snippet: string, files: string[], isDone: boolean) => {
         const color = ALL_AGENTS.find((a) => a.name === name)?.color ?? "#94a3b8";
         const ts = new Date().toLocaleTimeString("en-US", { hour12: false });
+        // Never let raw JSON syntax leak into the thoughts panel — the summarizer extracts
+        // assistantReply from full or truncated JSON, falls back to a role one-liner.
+        const role = ALL_AGENTS.find((a) => a.name === name)?.specialization ?? name;
+        const cleanText = isDone
+          ? summarizeAgentHandoff({ role, reply: snippet, artifactPaths: files }).slice(0, 260)
+          : snippet.slice(0, 260);
         setMessages((prev) => prev.map((msg) => {
           if (msg.id !== thinkingId) return msg;
           const thoughts = msg.thoughts ?? [];
           if (thoughts.some((t) => t.agent === name)) {
-            return { ...msg, thoughts: thoughts.map((t) => t.agent === name ? { ...t, text: snippet.slice(0, 260), files, done: isDone } : t) };
+            return { ...msg, thoughts: thoughts.map((t) => t.agent === name ? { ...t, text: cleanText, files, done: isDone } : t) };
           }
-          return { ...msg, thoughts: [...thoughts, { agent: name, color, text: snippet.slice(0, 260), ts, done: isDone, files }] };
+          return { ...msg, thoughts: [...thoughts, { agent: name, color, text: cleanText, ts, done: isDone, files }] };
         }));
       };
 
