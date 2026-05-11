@@ -1052,15 +1052,14 @@ function buildSandpackFiles(artifacts: MissionArtifact[]): {
   // Detect the entry point: prefer src/main.tsx hierarchy, fallback to template default
   const entry = ENTRY_CANDIDATES.find((c) => files[c]) ?? "/index.tsx";
 
-  // Create empty CSS stubs for any CSS imports that reference missing files.
-  // Sandpack fails hard on "module not found" for CSS — stubs prevent the error.
+  // Create stubs for any CSS imports that reference missing files (Sandpack hard-crashes on missing modules).
   const allPaths = new Set(Object.keys(files));
   for (const [filePath, { code }] of Object.entries(files)) {
     if (!filePath.match(/\.(tsx?|jsx?)$/)) continue;
     const dir = filePath.replace(/\/[^/]+$/, "") || "/";
     for (const m of code.matchAll(/import\s+['"]([^'"]+\.css)['"]/g)) {
       const imp = m[1]!;
-      if (imp.startsWith("http") || !imp.match(/^\.\.?\//)) continue; // skip absolute/pkg
+      if (imp.startsWith("http") || !imp.match(/^\.\.?\//)) continue;
       const parts = `${dir}/${imp}`.split("/").filter(Boolean);
       const resolved: string[] = [];
       for (const p of parts) { if (p === "..") resolved.pop(); else if (p !== ".") resolved.push(p); }
@@ -1069,33 +1068,61 @@ function buildSandpackFiles(artifacts: MissionArtifact[]): {
     }
   }
 
+  // Inject a base CSS reset so the preview is never completely invisible.
+  // The Tailwind Play CDN handles utility classes; this guarantees box-sizing + font.
+  const BASE_CSS_KEY = "/src/_sandpack_base.css";
+  files[BASE_CSS_KEY] = {
+    code: `*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, sans-serif; min-height: 100vh; }
+#root { min-height: 100vh; display: flex; flex-direction: column; }`,
+  };
+  // Prepend the base import to the entry file if it's not already there
+  const entryFile = files[entry];
+  if (entryFile && !entryFile.code.includes("_sandpack_base")) {
+    const relBase = entry.replace(/\/[^/]+$/, "") === "/src"
+      ? "./_sandpack_base.css"
+      : "/src/_sandpack_base.css";
+    files[entry] = { code: `import "${relBase}";\n${entryFile.code}` };
+  }
+
   return { files, dependencies, entry };
 }
 
 function SandpackErrorMonitor({ onErrors }: { onErrors: (errs: string[]) => void }) {
-  const { listen } = useSandpack();
+  const { sandpack, listen } = useSandpack();
+  const reportedRef = useRef(false);
   const accRef = useRef<string[]>([]);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Primary: read sandpack.errors state directly (catches all bundler errors)
+  useEffect(() => {
+    const errs = (sandpack as unknown as { errors?: { message: string }[] }).errors ?? [];
+    if (errs.length > 0 && !reportedRef.current) {
+      reportedRef.current = true;
+      onErrors(errs.map((e) => e.message));
+    }
+    if (errs.length === 0) reportedRef.current = false;
+  }, [(sandpack as unknown as { errors?: unknown[] }).errors, onErrors]);
+
+  // Fallback: listen to message bus for any error events
   useEffect(() => {
     const unsub = listen((msg: Record<string, unknown>) => {
-      // Catch bundler errors, module-not-found, compile errors, and runtime crashes
       const isErr =
         (msg["type"] === "action" && msg["action"] === "show-error") ||
         msg["type"] === "compile-error" ||
         msg["type"] === "module-error" ||
         (msg["type"] === "done" && msg["compilatonError"] === true);
       if (!isErr) return;
-      const text = [
-        msg["title"] ?? msg["name"],
-        msg["message"],
-        msg["error"] && typeof msg["error"] === "object" ? (msg["error"] as Record<string, unknown>)["message"] : undefined,
-      ].filter(Boolean).join(": ");
+      const text = [msg["title"] ?? msg["name"], msg["message"]].filter(Boolean).join(": ");
       if (text) accRef.current.push(String(text));
       if (timerRef.current) clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => {
-        if (accRef.current.length > 0) { onErrors([...accRef.current]); accRef.current = []; }
-      }, 2500);
+        if (accRef.current.length > 0 && !reportedRef.current) {
+          reportedRef.current = true;
+          onErrors([...accRef.current]);
+        }
+        accRef.current = [];
+      }, 2000);
     });
     return () => { unsub(); if (timerRef.current) clearTimeout(timerRef.current); };
   }, [listen, onErrors]);
@@ -1148,7 +1175,12 @@ function SandpackLivePreview({
           template="react-ts"
           files={files}
           customSetup={{ dependencies, entry }}
-          options={{ externalResources: ["https://cdn.tailwindcss.com"] }}
+          options={{
+            externalResources: [
+              // Play CDN (JS) — scans DOM for utility classes and applies them dynamically
+              "https://cdn.tailwindcss.com",
+            ],
+          }}
           theme="dark"
         >
           <SandpackErrorMonitor onErrors={onErrors} />
