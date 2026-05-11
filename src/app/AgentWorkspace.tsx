@@ -45,6 +45,15 @@ import { buildArtifactTree, dedupeArtifactsByPath, type ArtifactTreeNode } from 
 // All agent invocations always use GPT-5 for best results.
 const AGENT_MODEL = "gpt-5";
 
+type ChatThought = {
+  agent: string;
+  color: string;
+  text: string;
+  ts: string;
+  done: boolean;
+  files?: string[];
+};
+
 type ChatMsg = {
   id: number;
   agent: string;
@@ -52,33 +61,14 @@ type ChatMsg = {
   text: string;
   state?: "thinking" | "delegating" | "executing" | "approved" | "failed";
   ts: string;
-  /** Controls visual rendering style in the chat panel. */
-  kind?: "system" | "system_done" | "system_warn" | "narrative" | "output" | "done" | "verify_ok" | "verify_fail" | "repair" | "thinking_active" | "coordination_result" | "hivemind_swarm";
-  /** Expandable inter-agent coordination log (shown in "Thought for Xs" section). */
-  thinkingLog?: string[];
-  /** Elapsed seconds of coordination thinking. */
-  thinkingDuration?: number;
-  /** Files that were modified by the swarm for this response. */
-  fileChanges?: { path: string; agent: string; added: number; removed: number }[];
-  /** Per-agent thought entries shown in the collapsible reasoning panel (hivemind_swarm). */
-  thoughts?: Array<{ agent: string; color: string; text: string; ts: string; done: boolean }>;
+  kind?: "system" | "system_done" | "system_warn" | "hivemind_swarm";
+  /** Elapsed seconds stored when swarm completes. */
+  elapsedSecs?: number;
+  /** Per-agent thought entries for the collapsible reasoning panel. */
+  thoughts?: ChatThought[];
 };
 
-const seedMessages: ChatMsg[] = [
-  { id: 1, agent: "Strategy", color: "#22d3ee", text: "Research trending Solana meme narratives — focus on past 14 days.", state: "delegating", ts: "16:42:08" },
-  { id: 2, agent: "Research", color: "#a855f7", text: "Identified 12 high-performing meme formats. Sending vectors → Memory.", state: "executing", ts: "16:42:11" },
-  { id: 3, agent: "Memory", color: "#f59e0b", text: "Indexed 248 vectors. Recall handle: mem://campaign/0x4f2", state: "approved", ts: "16:42:14" },
-  { id: 4, agent: "Design", color: "#3b82f6", text: "Generating campaign visual assets — 12 variants in flight.", state: "executing", ts: "16:42:18" },
-  { id: 5, agent: "Treasury", color: "#10b981", text: "Budget allocation approved · 12.4 SOL → escrow.", state: "approved", ts: "16:42:21" },
-  { id: 6, agent: "Analytics", color: "#8b5cf6", text: "Predicted engagement increased by 27% over baseline.", state: "thinking", ts: "16:42:25" },
-];
-
-const newMessages: ChatMsg[] = [
-  { id: 7, agent: "Coordination", color: "#06b6d4", text: "Routing variant 7 → Marketing for distribution.", state: "delegating", ts: "16:42:31" },
-  { id: 8, agent: "Development", color: "#0ea5e9", text: "Embedding tracker into landing page. ETA 90s.", state: "executing", ts: "16:42:36" },
-  { id: 9, agent: "Strategy", color: "#22d3ee", text: "Reweighting CPC ceiling → 0.42 SOL based on Analytics signal.", state: "thinking", ts: "16:42:42" },
-  { id: 10, agent: "Treasury", color: "#10b981", text: "Settled 2.4 SOL → Design Agent · tx 4kJ2…91FE", state: "approved", ts: "16:42:48" },
-];
+const seedMessages: ChatMsg[] = [];
 
 type LogLine = { ts: number; agent: string; message: string };
 
@@ -688,167 +678,200 @@ function CoordinationResultBubble({ m }: { m: ChatMsg }) {
 }
 
 /** Single HiveMind bubble: collapsible agent thought chain + final reply. */
+/** Single thought entry inside the collapsible panel — Claude tool-call style. */
+function HiveMindThought({ t }: { t: ChatThought }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 3 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.22 }}
+      className="min-w-0"
+    >
+      <div className="flex items-center gap-2 mb-0.5">
+        <div
+          className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded text-[7px] font-bold"
+          style={{ background: `${t.color}18`, color: t.color, border: `1px solid ${t.color}28` }}
+        >
+          {t.agent.slice(0, 2).toUpperCase()}
+        </div>
+        <span className="text-[11.5px] font-medium" style={{ color: t.color }}>
+          {t.agent}
+        </span>
+        <span className="ml-auto text-[10px] text-white/20 font-mono">{t.ts}</span>
+        {!t.done ? (
+          <motion.span
+            animate={{ opacity: [0.25, 0.9, 0.25] }}
+            transition={{ duration: 1.3, repeat: Infinity }}
+            className="text-[10px] text-white/30"
+          >
+            working…
+          </motion.span>
+        ) : (
+          <span className="text-[10px] text-emerald-400/60">done</span>
+        )}
+      </div>
+
+      {t.text && (
+        <p className="pl-[26px] text-[11.5px] leading-relaxed text-white/38">
+          {t.text.length > 260 ? `${t.text.slice(0, 260)}…` : t.text}
+        </p>
+      )}
+
+      {t.files && t.files.length > 0 && (
+        <div className="mt-1.5 pl-[26px] space-y-[3px]">
+          {t.files.slice(0, 8).map((f, i) => (
+            <div key={i} className="flex items-center gap-1.5 font-mono text-[10.5px]">
+              <span className="text-emerald-400/70 select-none">+</span>
+              <span className="text-white/30 truncate">{f}</span>
+            </div>
+          ))}
+          {t.files.length > 8 && (
+            <p className="pl-3 text-[10px] text-white/18">+{t.files.length - 8} more files</p>
+          )}
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+/** Main HiveMind message — Claude-style with live timer, thought chain, and final reply. */
 function HiveMindSwarmBubble({ m }: { m: ChatMsg }) {
-  const [expanded, setExpanded] = useState(true);
+  const [open, setOpen] = useState(true);
+  const [elapsed, setElapsed] = useState(0);
   const done = m.state === "approved" || m.state === "failed";
   const thoughts = m.thoughts ?? [];
-  const completedCount = thoughts.filter((t) => t.done).length;
-  const totalSecs = completedCount * 9;
+
+  useEffect(() => {
+    if (done) return;
+    const t = setInterval(() => setElapsed((e) => e + 1), 1000);
+    return () => clearInterval(t);
+  }, [done]);
+
+  const displaySecs = done ? (m.elapsedSecs ?? Math.max(elapsed, thoughts.length * 9)) : elapsed;
+  const activeThought = thoughts.find((t) => !t.done);
 
   return (
-    <div className="flex items-start gap-3">
-      <div
-        className="h-8 w-8 shrink-0 rounded-full flex items-center justify-center text-[10px] font-bold tracking-tight"
-        style={{
-          background: done
-            ? "radial-gradient(circle at 35% 35%, rgba(34,211,238,0.35), rgba(34,211,238,0.1))"
-            : "radial-gradient(circle at 35% 35%, rgba(34,211,238,0.25), rgba(34,211,238,0.06))",
-          border: "1.5px solid rgba(34,211,238,0.5)",
-          boxShadow: "0 0 16px rgba(34,211,238,0.2)",
-          color: "#22d3ee",
-        }}
-      >
-        {done ? "HM" : <Loader2 className="h-4 w-4 animate-spin text-cyan-300" />}
-      </div>
+    <div className="space-y-2.5">
+      {/* Animated dots while waiting for first thought */}
+      {!done && thoughts.length === 0 && (
+        <motion.div
+          className="flex items-center gap-1.5"
+          animate={{ opacity: [0.4, 1, 0.4] }}
+          transition={{ duration: 1.4, repeat: Infinity }}
+        >
+          {[0, 1, 2].map((i) => (
+            <span
+              key={i}
+              className="h-2 w-2 rounded-full bg-white/25"
+              style={{ animationDelay: `${i * 0.15}s` }}
+            />
+          ))}
+        </motion.div>
+      )}
 
-      <div className="min-w-0 flex-1">
-        <div className="mb-2 flex items-center gap-2">
-          <span className="text-[12px] font-semibold text-cyan-300">HiveMind</span>
-          {done ? (
-            <StatusBadge s={m.state === "approved" ? "approved" : "failed"} />
-          ) : (
-            <motion.span
-              animate={{ opacity: [0.4, 1, 0.4] }}
-              transition={{ duration: 1.6, repeat: Infinity }}
-              className="text-[9px] uppercase tracking-widest text-cyan-300/55"
-            >
-              coordinating
-            </motion.span>
-          )}
-          <span className="ml-auto font-mono text-[9px] text-white/25">{m.ts}</span>
-        </div>
+      {/* Current agent status while running */}
+      {!done && activeThought && (
+        <motion.p
+          key={activeThought.agent}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="text-[12.5px] text-white/35"
+        >
+          {activeThought.agent} is working…
+        </motion.p>
+      )}
 
-        {thoughts.length > 0 && (
-          <>
-            <button
-              type="button"
-              onClick={() => setExpanded((v) => !v)}
-              className="mb-2.5 flex items-center gap-1.5 rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-1.5 text-[11px] text-white/50 transition-colors hover:border-white/15 hover:text-white/75"
-            >
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${
-                  done
-                    ? "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.7)]"
-                    : "bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.7)]"
-                }`}
-                style={done ? {} : { animation: "pulse 1.5s infinite" }}
-              />
-              {done
-                ? `Thought for ${totalSecs}s`
-                : `Thinking for ${completedCount * 9}s…`}
-              <ChevronRight
-                className={`h-3 w-3 transition-transform duration-200 ${expanded ? "rotate-90" : ""}`}
-              />
-            </button>
-
-            <AnimatePresence initial={false}>
-              {expanded && (
-                <motion.div
-                  key="thoughts"
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: "auto", opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={{ duration: 0.2 }}
-                  className="overflow-hidden"
-                >
-                  <div className="mb-3 rounded-xl border border-white/[0.07] bg-black/50 p-3 space-y-3">
-                    {thoughts.map((t, i) => (
-                      <motion.div
-                        key={`${t.agent}-${i}`}
-                        initial={{ opacity: 0, y: 4 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ duration: 0.25 }}
-                        className="flex items-start gap-2"
-                      >
-                        <div
-                          className="mt-0.5 h-4 w-4 shrink-0 rounded-full flex items-center justify-center text-[7px] font-bold"
-                          style={{
-                            background: `${t.color}22`,
-                            border: `1px solid ${t.color}55`,
-                            color: t.color,
-                          }}
-                        >
-                          {t.agent.slice(0, 2).toUpperCase()}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="mb-0.5 flex items-center gap-1.5">
-                            <span className="text-[10px] font-semibold" style={{ color: t.color }}>
-                              {t.agent}
-                            </span>
-                            {!t.done ? (
-                              <motion.span
-                                animate={{ opacity: [0.3, 1, 0.3] }}
-                                transition={{ duration: 1.2, repeat: Infinity }}
-                                className="text-[9px] text-white/35"
-                              >
-                                working…
-                              </motion.span>
-                            ) : (
-                              <span className="text-[9px] text-emerald-400/70">done</span>
-                            )}
-                            <span className="ml-auto font-mono text-[9px] text-white/20">{t.ts}</span>
-                          </div>
-                          <p className="text-[11px] leading-relaxed text-white/45 font-mono">
-                            {t.text.length > 300 ? `${t.text.slice(0, 300)}…` : t.text}
-                          </p>
-                        </div>
-                      </motion.div>
-                    ))}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </>
-        )}
-
-        {!done && (
-          <p className="text-[12px] text-white/35">
-            {thoughts.length === 0
-              ? "Initialising agent swarm…"
-              : `${thoughts.filter((t) => !t.done).length > 0
-                  ? `${thoughts.find((t) => !t.done)?.agent ?? "Agent"} is working`
-                  : "Finalising"} · ${completedCount} of ${thoughts.length} agents done`}
-          </p>
-        )}
-
-        {done && m.text && m.text.trim().length > 0 && (
-          <motion.div
-            initial={{ opacity: 0, y: 4 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.3 }}
-            className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-3.5"
+      {/* Thought collapsible — shows once we have at least one entry */}
+      {thoughts.length > 0 && (
+        <div>
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            className="group flex items-center gap-1.5 text-[12.5px] text-white/40 hover:text-white/70 transition-colors select-none"
           >
-            <AgentMessageMarkdown source={m.text} />
-          </motion.div>
-        )}
-      </div>
+            <span
+              className={`h-[7px] w-[7px] rounded-full flex-shrink-0 ${
+                done ? "bg-emerald-400/80" : "bg-cyan-400/70 animate-pulse"
+              }`}
+            />
+            <span>{done ? `Thought for ${displaySecs}s` : `Thinking for ${elapsed}s`}</span>
+            <ChevronRight
+              className={`h-3.5 w-3.5 text-white/30 transition-transform duration-200 ${open ? "rotate-90" : ""}`}
+            />
+          </button>
+
+          <AnimatePresence initial={false}>
+            {open && (
+              <motion.div
+                key="thought-body"
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.18, ease: "easeInOut" }}
+                className="overflow-hidden"
+              >
+                <div className="mt-2.5 ml-1 border-l border-white/[0.08] pl-4 space-y-3.5 pb-1">
+                  {thoughts.map((t, i) => (
+                    <HiveMindThought key={`${t.agent}-${i}`} t={t} />
+                  ))}
+                  {!done && (
+                    <motion.div
+                      animate={{ opacity: [0.2, 0.7, 0.2] }}
+                      transition={{ duration: 1.5, repeat: Infinity }}
+                      className="flex items-center gap-1.5 text-[11px] text-white/22"
+                    >
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      <span>Coordinating…</span>
+                    </motion.div>
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      )}
+
+      {/* Final answer */}
+      {done && m.text && m.text.trim().length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.28 }}
+          className="pt-0.5"
+        >
+          <AgentMessageMarkdown source={m.text} />
+        </motion.div>
+      )}
+
+      {m.state === "failed" && !m.text && (
+        <p className="text-[13px] text-red-400/80">Swarm run failed. Try again.</p>
+      )}
     </div>
   );
 }
 
-/** Route a ChatMsg to the correct visual component. */
+/** Minimal system divider — mission lifecycle notifications. */
+function SystemNotice({ m }: { m: ChatMsg }) {
+  const icon = m.kind === "system_done" ? "✓" : m.kind === "system_warn" ? "⚠" : "·";
+  const color = m.kind === "system_done" ? "text-emerald-400/50" : m.kind === "system_warn" ? "text-amber-400/50" : "text-white/25";
+  return (
+    <div className="flex items-center gap-3 py-0.5">
+      <div className="h-px flex-1 bg-white/[0.04]" />
+      <span className={`text-[10.5px] font-mono ${color} flex items-center gap-1.5`}>
+        <span>{icon}</span>
+        <span className="max-w-[340px] truncate">{m.text}</span>
+      </span>
+      <div className="h-px flex-1 bg-white/[0.04]" />
+    </div>
+  );
+}
+
+/** Route a ChatMsg to the correct visual component — Claude-style: only HiveMind + User. */
 function ChatBubble({ m }: { m: ChatMsg }) {
-  // Check kind first — a message's kind always wins over agent name for routing.
   if (m.kind === "hivemind_swarm") return <HiveMindSwarmBubble m={m} />;
-  if (m.kind === "thinking_active") return <ThinkingActiveBubble m={m} />;
-  if (m.kind === "coordination_result") return <CoordinationResultBubble m={m} />;
-  if (m.kind === "system" || m.kind === "system_done" || m.kind === "system_warn") return <SystemBubble m={m} />;
-  if (m.kind === "verify_ok" || m.kind === "verify_fail") return <VerifyCard m={m} />;
-  if (m.kind === "done") return <DonePill m={m} />;
-  if (m.kind === "narrative") return <NarrativeBubble m={m} />;
-  // Agent-based routing (only for messages with no specific kind)
+  if (m.kind === "system" || m.kind === "system_done" || m.kind === "system_warn") return <SystemNotice m={m} />;
   if (m.agent === "Operator") return <UserBubble m={m} />;
-  return <OutputBubble m={m} />;
+  return null;
 }
 
 function ArtifactTreeView({
@@ -1153,14 +1176,16 @@ function AgentWorkspaceMissionBody({
           const isDone = m.startsWith("[system:done] ");
           const isWarn = m.startsWith("[system:warn] ");
           setActiveAgent(null);
+          // System done/warn clears the swarm ref
+          if (isDone) hivemindMsgIdRef.current = null;
           setMessages((prev) => [
             ...prev,
             {
               id: evt.payload.ts,
               agent: "HiveMind",
-              color: isDone ? "#10b981" : isWarn ? "#f59e0b" : "#22d3ee",
+              color: "#22d3ee",
               text: m.replace(/^\[system(?::\w+)?\]\s*/, ""),
-              state: isDone ? "approved" : isWarn ? "thinking" : "executing",
+              state: "executing",
               kind: isDone ? "system_done" : isWarn ? "system_warn" : "system",
               ts: fmt(evt.payload.ts),
             },
@@ -1169,52 +1194,64 @@ function AgentWorkspaceMissionBody({
           const meta = ALL_AGENTS.find((a) => a.name === agentName);
           const color = meta?.color ?? "#94a3b8";
           setActiveAgent({ name: agentName, color, phase: "Planning" });
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: evt.payload.ts,
-              agent: agentName,
-              color,
-              text: m.replace(/^\[plan\]\s*/, ""),
-              state: "delegating",
-              kind: "narrative",
-              ts: fmt(evt.payload.ts),
-            },
-          ]);
+          // Route into HiveMind bubble if swarm is active; else ignore (onProgress handles it)
+          const hmId = hivemindMsgIdRef.current;
+          if (hmId !== null) {
+            setMessages((prev) => prev.map((msg) => {
+              if (msg.id !== hmId) return msg;
+              const thoughts = msg.thoughts ?? [];
+              if (thoughts.some((t) => t.agent === agentName)) return msg;
+              return {
+                ...msg,
+                thoughts: [...thoughts, {
+                  agent: agentName, color,
+                  text: m.replace(/^\[plan\]\s*/, "").slice(0, 260),
+                  ts: fmt(evt.payload.ts), done: false,
+                }],
+              };
+            }));
+          }
         } else if (m.startsWith("[work] ")) {
           const meta = ALL_AGENTS.find((a) => a.name === agentName);
           const color = meta?.color ?? "#94a3b8";
           setActiveAgent({ name: agentName, color, phase: "Building" });
-        } else if (m.startsWith("[done] ")) {
+        } else if (m.startsWith("[done] ") || m.startsWith("[progress] ")) {
           const meta = ALL_AGENTS.find((a) => a.name === agentName);
           const color = meta?.color ?? "#10b981";
           setActiveAgent(null);
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: evt.payload.ts,
-              agent: agentName,
-              color,
-              text: m.replace(/^\[done\]\s*/, ""),
-              state: "approved",
-              kind: "done",
-              ts: fmt(evt.payload.ts),
-            },
-          ]);
+          // Mark that thought as done in the HiveMind bubble
+          const hmId = hivemindMsgIdRef.current;
+          if (hmId !== null) {
+            setMessages((prev) => prev.map((msg) => {
+              if (msg.id !== hmId) return msg;
+              return {
+                ...msg,
+                thoughts: (msg.thoughts ?? []).map((t) =>
+                  t.agent === agentName ? { ...t, done: true, color } : t,
+                ),
+              };
+            }));
+          }
         } else if (m.startsWith("[verify] ") || m.startsWith("[verify:issue] ")) {
-          const isIssue = m.startsWith("[verify:issue] ");
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: evt.payload.ts,
-              agent: "Verifier",
-              color: isIssue ? "#f59e0b" : "#10b981",
-              text: m.replace(/^\[verify(?::issue)?\]\s*/, ""),
-              state: isIssue ? "thinking" : "approved",
-              kind: isIssue ? "verify_fail" : "verify_ok",
-              ts: fmt(evt.payload.ts),
-            },
-          ]);
+          // Absorbed into the HiveMind bubble final message — no separate bubble
+          void 0;
+        } else if (m.startsWith("[repair:") || m.startsWith("[swarm]")) {
+          // Internal swarm repair — goes to log only, no chat bubble
+          void 0;
+        } else if (m.startsWith("[fail] ")) {
+          // Mark the relevant thought as failed
+          const hmId = hivemindMsgIdRef.current;
+          if (hmId !== null) {
+            setMessages((prev) => prev.map((msg) => {
+              if (msg.id !== hmId) return msg;
+              return {
+                ...msg,
+                thoughts: (msg.thoughts ?? []).map((t) =>
+                  t.agent === agentName ? { ...t, done: true } : t,
+                ),
+              };
+            }));
+          }
         }
 
         // Keep the timeline lightweight: only include swarm boundaries.
@@ -1486,21 +1523,24 @@ function AgentWorkspaceMissionBody({
           : (data.results.find((r) => r.role === "Coordination")?.reply ?? "");
       const coordBody = buildCoordinationDeliverableText(data, finalText || "Swarm run finished.");
 
-      // Build final thought list from all results, all marked done.
-      const finalThoughts = data.results
+      // Build final thought list from all results, all marked done (includes file paths).
+      const finalThoughts: ChatThought[] = data.results
         .filter((r) => r.role !== "Coordination")
         .map((r) => ({
           agent: r.role,
           color: ROLE_COLORS[r.role] ?? "#94a3b8",
-          text: (r.reply ?? "").trim().slice(0, 300) || r.error?.slice(0, 300) || `${r.role} completed.`,
+          text: (r.reply ?? "").trim().slice(0, 260) || r.error?.slice(0, 260) || `${r.role} completed.`,
           ts: ts2,
           done: true,
+          files: Array.isArray(r.artifactPaths) ? r.artifactPaths.slice(0, 10) : [],
         }));
 
+      hivemindMsgIdRef.current = null;
       // Update the HiveMind bubble to its final approved state.
+      const swarmElapsedSecs = Math.round((Date.now() - (data.startedAt ?? Date.now())) / 1000);
       setMessages((prev) => prev.map((msg) =>
         msg.id === hmId
-          ? { ...msg, state: "approved", text: coordBody, thoughts: finalThoughts, ts: ts2 }
+          ? { ...msg, state: "approved", text: coordBody, thoughts: finalThoughts, ts: ts2, elapsedSecs: swarmElapsedSecs }
           : msg,
       ));
 
@@ -1585,18 +1625,21 @@ function AgentWorkspaceMissionBody({
       ? mission.agents
       : [selectedAgent];
 
-    // 2. Insert clean "thinking" placeholder — random suffix prevents ID collision with previous messages
+    // 2. Insert HiveMind bubble in thinking state
     const thinkingId = Date.now() * 1000 + Math.floor(Math.random() * 999) + 1;
+    hivemindMsgIdRef.current = thinkingId;
+    const hmTs = new Date().toLocaleTimeString("en-US", { hour12: false });
     setMessages((m) => [
       ...m,
       {
         id: thinkingId,
-        agent: "Coordination",
+        agent: "HiveMind",
         color: "#22d3ee",
-        text: agentsToInvoke.join(" · "),
-        ts: new Date().toLocaleTimeString("en-US", { hour12: false }),
-        kind: "thinking_active" as const,
-        state: "executing" as const,
+        text: "",
+        ts: hmTs,
+        kind: "hivemind_swarm" as const,
+        state: "thinking" as const,
+        thoughts: [],
       },
     ]);
 
@@ -1637,9 +1680,23 @@ function AgentWorkspaceMissionBody({
       const firstAgentName = agentsToInvoke[0]!;
       const firstAgentId = resolveAgentId(firstAgentName);
 
+      const addThought = (name: string, snippet: string, files: string[], isDone: boolean) => {
+        const color = ALL_AGENTS.find((a) => a.name === name)?.color ?? "#94a3b8";
+        const ts = new Date().toLocaleTimeString("en-US", { hour12: false });
+        setMessages((prev) => prev.map((msg) => {
+          if (msg.id !== thinkingId) return msg;
+          const thoughts = msg.thoughts ?? [];
+          if (thoughts.some((t) => t.agent === name)) {
+            return { ...msg, thoughts: thoughts.map((t) => t.agent === name ? { ...t, text: snippet.slice(0, 260), files, done: isDone } : t) };
+          }
+          return { ...msg, thoughts: [...thoughts, { agent: name, color, text: snippet.slice(0, 260), ts, done: isDone, files }] };
+        }));
+      };
+
       if (!firstAgentId) {
         void reloadAgents();
       } else {
+        addThought(firstAgentName, "Analysing your request…", [], false);
         const firstRes = await invokeAgentApi(firstAgentId, {
           message: smartPrompt.replace("{AGENT}", firstAgentName),
           missionId: mission.id,
@@ -1653,7 +1710,7 @@ function AgentWorkspaceMissionBody({
             setMessages((m) =>
               m.map((msg) =>
                 msg.id === thinkingId
-                  ? { ...msg, kind: undefined, state: "failed" as const, text: "Sign-in required to invoke agents.", ts: new Date().toLocaleTimeString("en-US", { hour12: false }) }
+                  ? { ...msg, state: "failed" as const, text: "Sign-in required to invoke agents.", ts: new Date().toLocaleTimeString("en-US", { hour12: false }) }
                   : msg,
               ),
             );
@@ -1665,16 +1722,17 @@ function AgentWorkspaceMissionBody({
           if (firstRes.provider === "mock" && firstRes.debugLlm) {
             toast.error("Groq unavailable — mock reply shown", { description: firstRes.debugLlm.slice(0, 400), duration: 12_000 });
           }
-          results.push({ agentName: firstAgentName, reply: firstRes.reply, paths: firstRes.artifactPathsApplied ?? [] });
+          const paths = firstRes.artifactPathsApplied ?? [];
+          addThought(firstAgentName, firstRes.reply, paths, true);
+          results.push({ agentName: firstAgentName, reply: firstRes.reply, paths });
 
-          // If the first agent decided to write code, engage the remaining agents too.
-          const wasCodeChange = (firstRes.artifactPathsApplied?.length ?? 0) > 0;
+          const wasCodeChange = paths.length > 0;
           if (wasCodeChange && agentsToInvoke.length > 1) {
             for (let i = 1; i < agentsToInvoke.length; i++) {
               const agentName = agentsToInvoke[i]!;
               const agentId = resolveAgentId(agentName);
               if (!agentId) continue;
-
+              addThought(agentName, "Building…", [], false);
               const res = await invokeAgentApi(agentId, {
                 message: smartPrompt.replace("{AGENT}", agentName),
                 missionId: mission.id,
@@ -1686,7 +1744,9 @@ function AgentWorkspaceMissionBody({
               if (res.provider === "mock" && res.debugLlm) {
                 toast.error("Groq unavailable — mock reply shown", { description: res.debugLlm.slice(0, 400), duration: 12_000 });
               }
-              results.push({ agentName, reply: res.reply, paths: res.artifactPathsApplied ?? [] });
+              const rPaths = res.artifactPathsApplied ?? [];
+              addThought(agentName, res.reply, rPaths, true);
+              results.push({ agentName, reply: res.reply, paths: rPaths });
             }
           }
         }
@@ -1749,20 +1809,12 @@ function AgentWorkspaceMissionBody({
         }
       }
 
-      // 7. Replace the thinking placeholder with the final coordination result
+      // 7. Mark HiveMind bubble as approved with final reply
+      hivemindMsgIdRef.current = null;
       setMessages((m) =>
         m.map((msg) =>
           msg.id === thinkingId
-            ? {
-                ...msg,
-                text: finalReply,
-                state: "approved" as const,
-                kind: "coordination_result" as const,
-                thinkingLog,
-                thinkingDuration,
-                fileChanges,
-                ts: ts2,
-              }
+            ? { ...msg, text: finalReply, state: "approved" as const, elapsedSecs: thinkingDuration, ts: ts2 }
             : msg,
         ),
       );
