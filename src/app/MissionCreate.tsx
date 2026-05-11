@@ -70,6 +70,7 @@ const OPENAI_MODELS = [
   { id: "o1",           label: "o1",            desc: "Deep reasoning",              solMult: 3.2, tier: "premium"   },
   { id: "o3",           label: "o3",            desc: "Best-in-class reasoning",     solMult: 4.0, tier: "premium"   },
   { id: "gpt-5.1",      label: "GPT-5.1",       desc: "Most powerful · best-in-class", solMult: 5.0, tier: "premium" },
+  { id: "gpt-5.5-long-context", label: "GPT-5.5 long context", desc: "Long context · unified routing", solMult: 5.5, tier: "premium" },
 ] as const;
 
 type OpenAiModelId = (typeof OPENAI_MODELS)[number]["id"];
@@ -78,23 +79,21 @@ const TIER_COLOR: Record<string, string> = {
   light: "#22d3ee", standard: "#a855f7", reasoning: "#f59e0b", premium: "#ef4444",
 };
 
+const UNIFIED_AGENT_MODEL = "gpt-5.5-long-context" as OpenAiModelId;
+
 const PRIORITY_DEFAULT_AGENT_MODELS: Record<string, Record<string, OpenAiModelId>> = {
   low: Object.fromEntries([
     "Strategy","Research","Design","Development","Marketing","Treasury","Analytics","Coordination","Memory",
-  ].map(n => [n, "gpt-4o-mini" as OpenAiModelId])),
+  ].map((n) => [n, UNIFIED_AGENT_MODEL])),
   std: Object.fromEntries([
     "Strategy","Research","Design","Development","Marketing","Treasury","Analytics","Coordination","Memory",
-  ].map(n => [n, "gpt-4o-mini" as OpenAiModelId])),
-  high: {
-    Strategy: "gpt-4o-mini", Research: "gpt-4o-mini", Design: "gpt-4o",
-    Development: "gpt-4o", Marketing: "gpt-4o-mini", Treasury: "gpt-4o-mini",
-    Analytics: "gpt-4o-mini", Coordination: "gpt-4o", Memory: "gpt-4o-mini",
-  },
-  crit: {
-    Strategy: "gpt-4o", Research: "gpt-4o", Design: "gpt-4.1",
-    Development: "gpt-5.1", Marketing: "gpt-4o-mini", Treasury: "gpt-4o-mini",
-    Analytics: "gpt-4o", Coordination: "gpt-5.1", Memory: "gpt-4o-mini",
-  },
+  ].map((n) => [n, UNIFIED_AGENT_MODEL])),
+  high: Object.fromEntries([
+    "Strategy","Research","Design","Development","Marketing","Treasury","Analytics","Coordination","Memory",
+  ].map((n) => [n, UNIFIED_AGENT_MODEL])),
+  crit: Object.fromEntries([
+    "Strategy","Research","Design","Development","Marketing","Treasury","Analytics","Coordination","Memory",
+  ].map((n) => [n, UNIFIED_AGENT_MODEL])),
 };
 
 const PRIORITY_AGENTS: Record<string, string[]> = {
@@ -112,10 +111,10 @@ const PRIORITY_BUDGET: Record<string, number> = {
 };
 
 const PRIORITY_MODEL: Record<string, string> = {
-  low: "gpt-4o-mini",
-  std: "gpt-4o-mini",
-  high: "gpt-4o",
-  crit: "gpt-4o",
+  low: UNIFIED_AGENT_MODEL,
+  std: UNIFIED_AGENT_MODEL,
+  high: UNIFIED_AGENT_MODEL,
+  crit: UNIFIED_AGENT_MODEL,
 };
 
 function defaultDeadlineLocal(): string {

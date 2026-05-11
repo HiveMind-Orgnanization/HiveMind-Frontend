@@ -44,7 +44,7 @@ import { buildArtifactTree, dedupeArtifactsByPath, type ArtifactTreeNode } from 
 import { SandpackProvider, SandpackPreview as SandpackFrame, SandpackConsole, useSandpack } from "@codesandbox/sandpack-react";
 
 // All agent invocations always use GPT-5 for best results.
-const AGENT_MODEL = "gpt-5";
+const AGENT_MODEL = "gpt-5.5-long-context";
 
 type ChatThought = {
   agent: string;
