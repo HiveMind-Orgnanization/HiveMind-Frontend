@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Sparkles, Target, Calendar, Wallet, Cpu, Workflow,
-  Rocket, PlayCircle, Plus, X, Check, Zap,
+  Rocket, Plus, X, Check, Zap,
   Shield, Brain, Network, TrendingUp, Gauge, Bot, ArrowRight, Trophy,
 } from "lucide-react";
 import { Sidebar } from "./components/dashboard/sidebar";
@@ -352,7 +352,6 @@ export default function MissionCreate() {
   const coordModel = agentModels["Coordination"] ?? selectedModel;
   const navigate = useNavigate();
   const { create } = useMissions();
-  const [simulating, setSimulating] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [freeCredits, setFreeCredits] = useState<number | null>(null);
   const { connected, publicKey } = useWallet();
@@ -458,82 +457,6 @@ export default function MissionCreate() {
     } finally {
       setLaunching(false);
     }
-  };
-
-  /**
-   * Simulate: runs through every config gate the real launch will check, surfaces the
-   * concrete numbers (per-agent cost, escrow buffer, deadline reachability), and flags
-   * anything that would block launch. No mutation — pure preflight read.
-   */
-  const simulate = () => {
-    setSimulating(true);
-    // Schedule the diagnostic on the next tick so the spinner has a chance to render.
-    window.setTimeout(() => {
-      try {
-        const issues: string[] = [];
-        const wins: string[] = [];
-
-        // 1. Roster sanity.
-        if (selected.length === 0) issues.push("No agents selected — pick at least one specialist.");
-        else wins.push(`${selected.length} agent${selected.length === 1 ? "" : "s"} on the roster`);
-        if (selected.length > 0 && !selected.includes("Coordination") && priority !== "low") {
-          issues.push("Coordination agent missing — recommended for std/high/crit missions.");
-        }
-
-        // 2. Budget vs effective cost (model-weighted).
-        const effectiveCost = estCost;
-        if (effectiveCost > budget) {
-          issues.push(`Model mix needs ${effectiveCost.toFixed(2)} SOL but budget is ${budget.toFixed(2)} SOL — downshift a premium agent or raise budget.`);
-        } else {
-          const headroom = budget - effectiveCost;
-          wins.push(`Budget ${budget.toFixed(2)} SOL covers est. ${effectiveCost.toFixed(2)} SOL (${headroom.toFixed(2)} SOL headroom)`);
-        }
-
-        // 3. Allocation health — escrow at least 15 %.
-        const escrowPct = (allocParts.escrowReserve / allocSum) * 100;
-        if (escrowPct < 15) issues.push(`Escrow only ${escrowPct.toFixed(0)}% — bump to ≥20% so a stuck agent doesn't drain compute.`);
-        else wins.push(`Escrow ${escrowPct.toFixed(0)}% provides solid retry runway`);
-
-        // 4. Deadline reachability — `deadlineLocal` is a datetime-local string ("YYYY-MM-DDTHH:mm").
-        const deadlineMs = deadlineLocal.trim() ? new Date(deadlineLocal).getTime() : NaN;
-        if (Number.isFinite(deadlineMs)) {
-          const hoursLeft = Math.round((deadlineMs - Date.now()) / 3_600_000);
-          const etaHours = Math.max(1, Math.round(8 - selected.length * 0.6));
-          if (hoursLeft < etaHours) {
-            issues.push(`Deadline ${hoursLeft}h away, ETA ~${etaHours}h — push the deadline out or add agents to parallelise.`);
-          } else {
-            wins.push(`Deadline ${hoursLeft}h out — ${etaHours}h ETA fits comfortably`);
-          }
-        }
-
-        // 5. Locked-tier model selection.
-        for (const a of selected) {
-          const id = agentModels[a] ?? UNIFIED_AGENT_MODEL;
-          const tier = OPENAI_MODELS.find((m) => m.id === id)?.tier ?? "light";
-          if (isModelLocked(tier)) {
-            issues.push(`${a} is on a premium model (${id}) — premium routing is coming soon; pick a light/standard tier model.`);
-          }
-        }
-
-        setSimulating(false);
-        if (issues.length === 0) {
-          toast.success(`Simulation passed · ${confidence}% confidence`, {
-            description: wins.slice(0, 3).join(" · "),
-            duration: 6500,
-          });
-        } else {
-          toast.warning(`Simulation flagged ${issues.length} issue${issues.length === 1 ? "" : "s"}`, {
-            description: issues.slice(0, 3).join("  •  "),
-            duration: 9000,
-          });
-        }
-      } catch (e) {
-        setSimulating(false);
-        toast.error("Simulation crashed — that's our bug, not yours", {
-          description: e instanceof Error ? e.message.slice(0, 120) : String(e).slice(0, 120),
-        });
-      }
-    }, 600);
   };
 
   // Auto-select agents and reset per-agent models based on priority
@@ -1297,14 +1220,6 @@ export default function MissionCreate() {
                           </button>
                         )}
                         <button
-                          onClick={simulate}
-                          disabled={simulating}
-                          className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.03] px-5 py-2.5 text-sm text-white/85 hover:border-cyan-300/40 hover:bg-cyan-300/5 disabled:opacity-60"
-                        >
-                          <PlayCircle className={`h-4 w-4 text-cyan-300 ${simulating ? "animate-spin" : ""}`} />
-                          {simulating ? "Simulating…" : "Simulate"}
-                        </button>
-                        <button
                           onClick={() => void launch("sol")}
                           disabled={!prompt.trim() || selected.length === 0 || launching}
                           className="group relative inline-flex items-center gap-2 overflow-hidden rounded-full px-6 py-2.5 text-sm text-black disabled:opacity-50"
@@ -1333,12 +1248,11 @@ export default function MissionCreate() {
                       <Sparkles className="h-4 w-4 text-cyan-300" />
                       Live Orchestration Preview
                     </div>
-                    <span className="text-[10px] uppercase tracking-[0.25em] text-cyan-300">simulating</span>
+                    <span className="text-[10px] uppercase tracking-[0.25em] text-cyan-300">live</span>
                   </div>
                   <div className="p-3">
                     <CoordGraph
                       selectedAgentNames={selected}
-                      simulateBurst={simulating}
                       agentModelLabels={(() => {
                         // Build role → "GPT-4o" label map from the current agentModels selection
                         // so the graph badges mirror the Assemble Agent Crew dropdowns live.
