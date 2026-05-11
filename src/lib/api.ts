@@ -361,10 +361,28 @@ export async function startMissionPreview(missionId: string): Promise<{ ok: bool
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
+      // Hosted preview runs npm install + vite build on the server (often 2–15+ minutes on EB).
+      signal: typeof AbortSignal !== "undefined" && "timeout" in AbortSignal ? AbortSignal.timeout(960_000) : undefined,
     });
-    const j = (await r.json().catch(() => ({}))) as any;
+    const j = (await r.json().catch(() => ({}))) as {
+      ok?: boolean;
+      url?: string;
+      sessionId?: string;
+      error?: string;
+      message?: string;
+    };
     if (!r.ok) {
-      const msg = typeof j.error === "string" ? j.error : `Preview failed (${r.status}).`;
+      const detail =
+        typeof j.message === "string" && j.message.trim().length > 0
+          ? j.message.trim()
+          : typeof j.error === "string"
+            ? j.error
+            : "";
+      const msg =
+        detail ||
+        (r.status === 502 || r.status === 504
+          ? "Preview timed out or failed while building (try again in a minute)."
+          : `Preview failed (${r.status}).`);
       return { ok: false, message: msg };
     }
     const path = typeof j.url === "string" ? j.url : "";
