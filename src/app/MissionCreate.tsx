@@ -106,44 +106,51 @@ const TIER_COLOR: Record<string, string> = {
 // solMult on each model only affects the displayed cost ladder when the user upgrades.
 const UNIFIED_AGENT_MODEL = "gpt-5.5" as OpenAiModelId;
 
+/** Default model PER ROLE — uses LIGHT or STANDARD tier only. Premium tiers (Claude Opus,
+ *  Gemini Pro, GPT-5.5/Pro, o1/o3) are surfaced in the dropdown as "Coming soon" — disabled
+ *  for now, but visible to advertise HiveMind's multi-provider routing roadmap. */
 const ROLE_HEADLINE_MODEL: Record<string, OpenAiModelId> = {
-  Strategy:     "claude-4.7-sonnet",
-  Research:     "gemini-2.5-pro",
-  Design:       "claude-4.7-sonnet",
-  Development:  "gpt-5.5",
-  Marketing:    "llama-4-70b",
-  Treasury:     "mixtral-8x22b",
-  Analytics:    "deepseek-v3",
-  Coordination: "gpt-5.5",
-  Memory:       "llama-4-70b",
+  Strategy:     "gpt-4o",          // standard 1.4
+  Research:     "deepseek-v3",     // standard 1.5
+  Design:       "gpt-4.1",         // standard 1.6
+  Development:  "llama-4-70b",     // standard 1.6
+  Marketing:    "llama-4-70b",     // standard 1.6
+  Treasury:     "mixtral-8x22b",   // standard 1.4
+  Analytics:    "deepseek-v3",     // standard 1.5
+  Coordination: "gpt-4.1",         // standard 1.6
+  Memory:       "gpt-4o-mini",     // light 1.0
 };
 
-// Per-priority upgrades: critical missions show the costlier "pro" tier so the SOL cost
-// goes up proportionally (UI signal), while the backend still calls gpt-5.5 underneath.
+// Per-priority defaults — low stays in light tier, std uses headline (standard), high/crit
+// move toward the upper end of *standard* (no premium yet — those are "Coming soon").
 const PRIORITY_DEFAULT_AGENT_MODELS: Record<string, Record<string, OpenAiModelId>> = {
   low: Object.fromEntries(
-    Object.entries(ROLE_HEADLINE_MODEL).map(([role, _m]) => [role, "llama-4-70b" as OpenAiModelId]),
+    Object.entries(ROLE_HEADLINE_MODEL).map(([role]) => [role, "gpt-4o-mini" as OpenAiModelId]),
   ),
   std: Object.fromEntries(Object.entries(ROLE_HEADLINE_MODEL)),
   high: Object.fromEntries(
-    Object.entries(ROLE_HEADLINE_MODEL).map(([role, m]) => {
-      // High priority: upgrade reasoning-heavy roles to a premium tier.
-      if (role === "Strategy" || role === "Design") return [role, "claude-4.7-opus" as OpenAiModelId];
-      if (role === "Research") return [role, "gemini-2.5-pro" as OpenAiModelId];
-      if (role === "Development" || role === "Coordination") return [role, "gpt-5.5" as OpenAiModelId];
-      return [role, m];
+    Object.entries(ROLE_HEADLINE_MODEL).map(([role]) => {
+      // Higher priority promotes within standard tier (still no premium).
+      if (role === "Strategy" || role === "Design") return [role, "gpt-4.1" as OpenAiModelId];
+      if (role === "Research" || role === "Analytics") return [role, "deepseek-v3" as OpenAiModelId];
+      if (role === "Development" || role === "Coordination") return [role, "gpt-5-mini" as OpenAiModelId];
+      return [role, "llama-4-70b" as OpenAiModelId];
     }),
   ),
   crit: Object.fromEntries(
     Object.entries(ROLE_HEADLINE_MODEL).map(([role]) => {
-      // Critical: every agent on a premium tier.
-      if (role === "Development" || role === "Coordination") return [role, "gpt-5.5-pro" as OpenAiModelId];
-      if (role === "Strategy" || role === "Design") return [role, "claude-4.7-opus" as OpenAiModelId];
-      if (role === "Research" || role === "Analytics") return [role, "gemini-2.5-pro" as OpenAiModelId];
-      return [role, "claude-4.7-sonnet" as OpenAiModelId];
+      // Critical: top of the standard tier; premium remains "Coming soon".
+      if (role === "Development" || role === "Coordination") return [role, "gpt-5-mini" as OpenAiModelId];
+      if (role === "Strategy" || role === "Design") return [role, "gpt-4.1" as OpenAiModelId];
+      if (role === "Research" || role === "Analytics") return [role, "deepseek-v3" as OpenAiModelId];
+      return [role, "llama-4-70b" as OpenAiModelId];
     }),
   ),
 };
+
+/** Tiers the user can pick today. Reasoning + premium are "Coming soon" and locked. */
+const ENABLED_MODEL_TIERS = new Set(["light", "standard"]);
+function isModelLocked(tier: string): boolean { return !ENABLED_MODEL_TIERS.has(tier); }
 
 const PRIORITY_AGENTS: Record<string, string[]> = {
   low: ["Strategy", "Development", "Treasury"],
@@ -453,14 +460,80 @@ export default function MissionCreate() {
     }
   };
 
+  /**
+   * Simulate: runs through every config gate the real launch will check, surfaces the
+   * concrete numbers (per-agent cost, escrow buffer, deadline reachability), and flags
+   * anything that would block launch. No mutation — pure preflight read.
+   */
   const simulate = () => {
     setSimulating(true);
+    // Schedule the diagnostic on the next tick so the spinner has a chance to render.
     window.setTimeout(() => {
-      setSimulating(false);
-      toast.success("Workflow simulation complete", {
-        description: `${selected.length} agents · ~${eta} · ${confidence}% confidence · ${budget.toFixed(2)} SOL`,
-      });
-    }, 2200);
+      try {
+        const issues: string[] = [];
+        const wins: string[] = [];
+
+        // 1. Roster sanity.
+        if (selected.length === 0) issues.push("No agents selected — pick at least one specialist.");
+        else wins.push(`${selected.length} agent${selected.length === 1 ? "" : "s"} on the roster`);
+        if (selected.length > 0 && !selected.includes("Coordination") && priority !== "low") {
+          issues.push("Coordination agent missing — recommended for std/high/crit missions.");
+        }
+
+        // 2. Budget vs effective cost (model-weighted).
+        const effectiveCost = estCost;
+        if (effectiveCost > budget) {
+          issues.push(`Model mix needs ${effectiveCost.toFixed(2)} SOL but budget is ${budget.toFixed(2)} SOL — downshift a premium agent or raise budget.`);
+        } else {
+          const headroom = budget - effectiveCost;
+          wins.push(`Budget ${budget.toFixed(2)} SOL covers est. ${effectiveCost.toFixed(2)} SOL (${headroom.toFixed(2)} SOL headroom)`);
+        }
+
+        // 3. Allocation health — escrow at least 15 %.
+        const escrowPct = (allocParts.escrowReserve / allocSum) * 100;
+        if (escrowPct < 15) issues.push(`Escrow only ${escrowPct.toFixed(0)}% — bump to ≥20% so a stuck agent doesn't drain compute.`);
+        else wins.push(`Escrow ${escrowPct.toFixed(0)}% provides solid retry runway`);
+
+        // 4. Deadline reachability.
+        const deadlineMs = new Date(deadline).getTime();
+        if (Number.isFinite(deadlineMs)) {
+          const hoursLeft = Math.round((deadlineMs - Date.now()) / 3_600_000);
+          const etaHours = Math.max(1, Math.round(8 - selected.length * 0.6));
+          if (hoursLeft < etaHours) {
+            issues.push(`Deadline ${hoursLeft}h away, ETA ~${etaHours}h — push the deadline out or add agents to parallelise.`);
+          } else {
+            wins.push(`Deadline ${hoursLeft}h out — ${etaHours}h ETA fits comfortably`);
+          }
+        }
+
+        // 5. Locked-tier model selection.
+        for (const a of selected) {
+          const id = agentModels[a] ?? UNIFIED_AGENT_MODEL;
+          const tier = OPENAI_MODELS.find((m) => m.id === id)?.tier ?? "light";
+          if (isModelLocked(tier)) {
+            issues.push(`${a} is on a premium model (${id}) — premium routing is coming soon; pick a light/standard tier model.`);
+          }
+        }
+
+        setSimulating(false);
+        if (issues.length === 0) {
+          toast.success(`Simulation passed · ${confidence}% confidence`, {
+            description: wins.slice(0, 3).join(" · "),
+            duration: 6500,
+          });
+        } else {
+          toast.warning(`Simulation flagged ${issues.length} issue${issues.length === 1 ? "" : "s"}`, {
+            description: issues.slice(0, 3).join("  •  "),
+            duration: 9000,
+          });
+        }
+      } catch (e) {
+        setSimulating(false);
+        toast.error("Simulation crashed — that's our bug, not yours", {
+          description: e instanceof Error ? e.message.slice(0, 120) : String(e).slice(0, 120),
+        });
+      }
+    }, 600);
   };
 
   // Auto-select agents and reset per-agent models based on priority
@@ -1006,17 +1079,37 @@ export default function MissionCreate() {
                                       value={curModelId}
                                       onChange={e => {
                                         e.stopPropagation();
-                                        setAgentModels(prev => ({ ...prev, [a.name]: e.target.value }));
+                                        const next = e.target.value;
+                                        const tier = OPENAI_MODELS.find((m) => m.id === next)?.tier ?? "light";
+                                        if (isModelLocked(tier)) {
+                                          // Locked tier — reject + show why. Keep the previous selection.
+                                          toast.message("Reasoning + premium models coming soon", {
+                                            description: "Light and Standard tiers are live today. Premium routing rolls out next.",
+                                          });
+                                          return;
+                                        }
+                                        setAgentModels(prev => ({ ...prev, [a.name]: next }));
                                       }}
                                       onClick={e => e.stopPropagation()}
-                                      className="max-w-[120px] rounded border border-white/10 bg-black/60 px-1.5 py-0.5 text-[9px] focus:outline-none"
+                                      className="max-w-[140px] rounded border border-white/10 bg-black/60 px-1.5 py-0.5 text-[9px] focus:outline-none"
                                       style={{ color: tierColor, borderColor: `${tierColor}44` }}
                                     >
-                                      {OPENAI_MODELS.map(m => (
-                                        <option key={m.id} value={m.id} style={{ color: TIER_COLOR[m.tier], background: "#0a0d14" }}>
-                                          {m.label}
-                                        </option>
-                                      ))}
+                                      {OPENAI_MODELS.map(m => {
+                                        const locked = isModelLocked(m.tier);
+                                        return (
+                                          <option
+                                            key={m.id}
+                                            value={m.id}
+                                            disabled={locked}
+                                            style={{
+                                              color: locked ? "#475569" : TIER_COLOR[m.tier],
+                                              background: "#0a0d14",
+                                            }}
+                                          >
+                                            {locked ? `${m.label} · Soon` : m.label}
+                                          </option>
+                                        );
+                                      })}
                                     </select>
                                   );
                                 })()}
