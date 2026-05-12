@@ -957,11 +957,19 @@ export default function MissionCreate() {
                               <div className="text-[11px] text-white/50">{a.spec}</div>
                               <div className="mt-3 flex items-center justify-between text-[10px] text-white/40">
                                 <span className="text-cyan-300">★ {a.rep}</span>
-                                {(() => {
-                                  const curModelId = agentModels[a.name] ?? "gpt-4o-mini";
-                                  const curModel = OPENAI_MODELS.find(m => m.id === curModelId);
-                                  const tierColor = TIER_COLOR[curModel?.tier ?? "light"];
-                                  return (
+                                <span className={on ? "text-emerald-300" : ""}>{on ? "engaged" : "available"}</span>
+                              </div>
+                              {/* Model dropdown — own row so it never gets squeezed when the
+                                  sidebar expands and the agent card narrows. Full-width chip,
+                                  readable font size, click bubbling stopped so picking a model
+                                  doesn't accidentally deselect the agent. */}
+                              {(() => {
+                                const curModelId = agentModels[a.name] ?? "gpt-4o-mini";
+                                const curModel = OPENAI_MODELS.find(m => m.id === curModelId);
+                                const tierColor = TIER_COLOR[curModel?.tier ?? "light"];
+                                return (
+                                  <div className="mt-2.5 flex items-center gap-1.5 text-[10px] text-white/40">
+                                    <span className="shrink-0 uppercase tracking-[0.18em] text-white/30">model</span>
                                     <select
                                       value={curModelId}
                                       onChange={e => {
@@ -969,7 +977,6 @@ export default function MissionCreate() {
                                         const next = e.target.value;
                                         const tier = OPENAI_MODELS.find((m) => m.id === next)?.tier ?? "light";
                                         if (isModelLocked(tier)) {
-                                          // Locked tier — reject + show why. Keep the previous selection.
                                           toast.message("Reasoning + premium models coming soon", {
                                             description: "Light and Standard tiers are live today. Premium routing rolls out next.",
                                           });
@@ -978,8 +985,8 @@ export default function MissionCreate() {
                                         setAgentModels(prev => ({ ...prev, [a.name]: next }));
                                       }}
                                       onClick={e => e.stopPropagation()}
-                                      className="max-w-[140px] rounded border border-white/10 bg-black/60 px-1.5 py-0.5 text-[9px] focus:outline-none"
-                                      style={{ color: tierColor, borderColor: `${tierColor}44` }}
+                                      className="min-w-0 flex-1 truncate rounded-md border bg-black/60 px-2 py-1 text-[11px] font-medium focus:outline-none focus:ring-1 focus:ring-cyan-300/40"
+                                      style={{ color: tierColor, borderColor: `${tierColor}55` }}
                                     >
                                       {OPENAI_MODELS.map(m => {
                                         const locked = isModelLocked(m.tier);
@@ -998,9 +1005,9 @@ export default function MissionCreate() {
                                         );
                                       })}
                                     </select>
-                                  );
-                                })()}
-                              </div>
+                                  </div>
+                                );
+                              })()}
                               <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-white/5">
                                 <motion.div
                                   className="h-full rounded-full"
@@ -1010,9 +1017,8 @@ export default function MissionCreate() {
                                   transition={{ duration: 0.8 }}
                                 />
                               </div>
-                              <div className="mt-1 flex justify-between text-[9px] text-white/40">
-                                <span>perf {a.perf}%</span>
-                                <span className={on ? "text-emerald-300" : ""}>{on ? "engaged" : "available"}</span>
+                              <div className="mt-1 text-[9px] text-white/40">
+                                perf {a.perf}%
                               </div>
                             </div>
                           </motion.button>

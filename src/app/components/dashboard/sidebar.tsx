@@ -8,7 +8,10 @@ import {
 } from "lucide-react";
 import { fetchTrialStatus } from "../../../lib/api";
 
-const items = [
+/** Sidebar items. `requiresWallet: true` hides the item until the wallet is connected —
+ *  surfaces that are meaningless without a wallet (per-user settings, the team workspace
+ *  scoped to the user, the live console showing the user's session) get filtered out. */
+const items: Array<{ icon: typeof Radio; label: string; to: string; requiresWallet?: boolean }> = [
   { icon: Radio, label: "Mission Control", to: "/dashboard" },
   { icon: Users, label: "Agent Workspace", to: "/agents" },
   { icon: Wallet, label: "Treasury", to: "/treasury" },
@@ -16,9 +19,9 @@ const items = [
   { icon: Brain, label: "Memory Explorer", to: "/memory" },
   { icon: Store, label: "Marketplace", to: "/marketplace" },
   { icon: BarChart3, label: "Analytics", to: "/analytics" },
-  { icon: Terminal, label: "Live Console", to: "/console" },
-  { icon: UsersRound, label: "Team Workspace", to: "/team" },
-  { icon: Settings, label: "Settings", to: "/settings" },
+  { icon: Terminal, label: "Live Console", to: "/console", requiresWallet: true },
+  { icon: UsersRound, label: "Team Workspace", to: "/team", requiresWallet: true },
+  { icon: Settings, label: "Settings", to: "/settings", requiresWallet: true },
 ];
 
 export function Sidebar() {
@@ -162,7 +165,7 @@ export function Sidebar() {
       </AnimatePresence>
 
       <nav className={`mt-3 space-y-0.5 ${collapsed ? "px-2" : "px-3"}`}>
-        {items.map((it) => {
+        {items.filter((it) => !it.requiresWallet || !!walletAddress).map((it) => {
           const active = isActive(it.to);
           return (
             <Link
