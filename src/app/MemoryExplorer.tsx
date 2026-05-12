@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router";
+import { useWallet } from "@solana/wallet-adapter-react";
 import { motion } from "motion/react";
+import { toast } from "sonner";
 import {
   Brain, Search, Network, Zap, Database, Sparkles, Hexagon, Layers,
   Filter, GitBranch, ChevronRight, History, BookmarkPlus, Atom, Activity,
-  Loader2,
+  Loader2, RefreshCcw,
 } from "lucide-react";
 import { Sidebar } from "./components/dashboard/sidebar";
 import { TopNav } from "./components/dashboard/topnav";
@@ -11,7 +14,7 @@ import { PageHeader } from "./components/dashboard/page-header";
 import { Particles } from "./components/particles";
 import { apiConfigured, memoryQueryApi } from "../lib/api";
 import { useMemoryChunks } from "./hooks/useHiveMind";
-import { useMissions } from "./store";
+import { useMissions, setActiveMissionIdForWallet } from "./store";
 import { WalletGate } from "./components/WalletGate";
 import { Skeleton } from "./components/ui/skeleton";
 
@@ -88,26 +91,14 @@ function placeNodes(): Node[] {
   });
 }
 
-const retrievalSamples = [
-  { q: "marketing campaign workflows",  matches: 12, top: 0.94 },
-  { q: "Solana growth strategies",      matches: 8,  top: 0.92 },
-  { q: "previous investor pitch assets",matches: 6,  top: 0.89 },
-  { q: "brand consistency tokens v2",   matches: 14, top: 0.97 },
-];
-
-const retrievedMemories = [
-  { id: "MEM-1842", t: "Brand consistency rules · v3 · cyan/purple gradient set", agent: "Lumen",  c: "#3b82f6", rel: 0.94, age: "2d" },
-  { id: "MEM-1781", t: "Solana ecosystem mid-cap reach matrix · April 2026",      agent: "Vega",   c: "#a855f7", rel: 0.91, age: "5d" },
-  { id: "MEM-1704", t: "Press kit bundle template · 24MB · stock layouts",        agent: "Atlas",  c: "#22d3ee", rel: 0.88, age: "9d" },
-  { id: "MEM-1652", t: "Memecoin sentiment vectors · Φ-cluster #4",               agent: "Echo",   c: "#8b5cf6", rel: 0.85, age: "12d" },
-  { id: "MEM-1540", t: "Hero video storyboard reference · 00:42 narrative arc",   agent: "Lumen",  c: "#3b82f6", rel: 0.82, age: "18d" },
-];
-
-const FALLBACK_HISTORICAL = [
-  { id: "M-229", t: "Solana Growth Strategy",   agents: 8, ms: "186h", recall: 24, c: "#22d3ee" },
-  { id: "M-218", t: "Cross-Vault Reconciliation", agents: 4, ms: "62h", recall: 12,  c: "#10b981" },
-  { id: "M-204", t: "Brand Refresh Q1",          agents: 6, ms: "112h", recall: 38, c: "#a855f7" },
-  { id: "M-188", t: "Agent Marketplace Launch",  agents: 9, ms: "204h", recall: 41, c: "#3b82f6" },
+/** Static suggestion chips. Click pre-fills the search box; if the suggestion
+ *  matches nothing the empty-state explains why. Counts intentionally omitted —
+ *  we don't have a "matches per query" probe before running the actual search. */
+const RETRIEVAL_SAMPLES: { q: string; hint: string }[] = [
+  { q: "marketing campaign workflows", hint: "find prior swarm marketing strategies" },
+  { q: "solana growth strategies",     hint: "search mission notes by topic" },
+  { q: "brand tokens",                 hint: "design tokens and palette references" },
+  { q: "deployment notes",             hint: "infra + release runbooks" },
 ];
 
 function MemoryGraph({ active, hover, setHover }: {
@@ -235,59 +226,75 @@ function MemoryGraph({ active, hover, setHover }: {
   );
 }
 
+type RetrievedRow = {
+  id: string;
+  t: string;
+  agent: string;
+  c: string;
+  rel: number;
+  age: string;
+  /** Real mission id when the chunk belongs to one — clicking the row opens it. */
+  missionId?: string;
+};
+
 export default function MemoryExplorer() {
-  const [query, setQuery] = useState("marketing campaign workflows");
+  const navigate = useNavigate();
+  const { publicKey } = useWallet();
+  const walletPk = publicKey?.toBase58() ?? null;
+
+  const [query, setQuery] = useState("");
   const [active, setActive] = useState<Cluster | "all">("all");
   const [hover, setHover] = useState<string | null>(null);
-  const [tps, setTps] = useState(184);
-  const { chunks, loading: chunksLoading } = useMemoryChunks();
+  const { chunks, loading: chunksLoading, reload: reloadChunks } = useMemoryChunks();
   const { missions, walletConnected } = useMissions();
+  const [refreshing, setRefreshing] = useState(false);
 
+  // Historical missions list — real user missions ordered newest first; no
+  // fake fallback. The "recall" tile was synthesized (8 + i*7 mod 33) before,
+  // which was meaningless; now shows real agent count + status instead.
   const historicalMissions = useMemo(() => {
-    if (apiConfigured() && missions.length > 0) {
-      const colors = ["#22d3ee", "#10b981", "#a855f7", "#3b82f6"];
-      return missions.slice(0, 4).map((m, i) => ({
+    const colors = ["#22d3ee", "#10b981", "#a855f7", "#3b82f6", "#06b6d4", "#ec4899"];
+    return [...missions]
+      .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+      .slice(0, 6)
+      .map((m, i) => ({
         id: m.id,
         t: m.title,
         agents: m.agents.length,
         ms: m.eta ?? "—",
-        recall: 8 + (i * 7) % 33,
+        status: m.status,
         c: colors[i % colors.length]!,
       }));
-    }
-    return FALLBACK_HISTORICAL;
   }, [missions]);
+
   const [searchBusy, setSearchBusy] = useState(false);
   const [searchNote, setSearchNote] = useState<string | null>(null);
   const [searchHits, setSearchHits] = useState<
     | {
         query: string;
-        items: {
-          id: string;
-          t: string;
-          agent: string;
-          c: string;
-          rel: number;
-          age: string;
-        }[];
+        items: RetrievedRow[];
       }
     | null
   >(null);
 
-  type RetrievedRow = (typeof retrievedMemories)[number];
   const chunkRows = useMemo((): RetrievedRow[] => {
-    if (!apiConfigured() || chunks.length === 0) return [];
+    if (chunks.length === 0) return [];
     return chunks.slice(0, 14).map((c, i) => ({
       id: c.id,
       t: c.text.length > 140 ? `${c.text.slice(0, 140)}…` : c.text,
-      agent: c.missionId ? `mission:${c.missionId}` : "shared",
+      agent: c.missionId ? `mission ${c.missionId}` : "shared",
       c: "#22d3ee",
       rel: typeof c.score === "number" ? c.score : Math.max(0.52, 0.94 - i * 0.025),
       age: "live",
+      missionId: c.missionId,
     }));
   }, [chunks]);
 
-  const displayRetrieved = searchHits?.items ?? (chunkRows.length > 0 ? chunkRows : retrievedMemories);
+  // Display ordering:
+  // 1. If user just ran a search, show those hits.
+  // 2. Otherwise show real chunks from /api/memory.
+  // 3. Otherwise show an empty state inline (no fake fallback rows).
+  const displayRetrieved: RetrievedRow[] = searchHits?.items ?? chunkRows;
 
   const runSearch = useCallback(
     async (override?: string) => {
@@ -312,20 +319,46 @@ export default function MemoryExplorer() {
         items: res.matches.map((m) => ({
           id: m.id,
           t: m.text.length > 160 ? `${m.text.slice(0, 160)}…` : m.text,
-          agent: m.missionId ? `mission:${m.missionId}` : "memory index",
+          agent: m.missionId ? `mission ${m.missionId}` : "memory index",
           c: "#a855f7",
           rel: m.relevance,
           age: "query",
+          missionId: m.missionId,
         })),
       });
     },
     [query],
   );
 
-  useEffect(() => {
-    const t = setInterval(() => setTps(150 + Math.floor(Math.random() * 80)), 1400);
-    return () => clearInterval(t);
-  }, []);
+  // Clicking a retrieved memory row opens the source mission in the Agent
+  // Workspace when the chunk has a missionId. Without one we just copy the
+  // chunk id to clipboard so users can reference it elsewhere.
+  const openChunkSource = (row: RetrievedRow) => {
+    if (row.missionId) {
+      setActiveMissionIdForWallet(walletPk, row.missionId);
+      navigate("/agents");
+      return;
+    }
+    try {
+      void navigator.clipboard.writeText(row.id);
+      toast.success("Chunk id copied", { description: row.id });
+    } catch {
+      toast.message(row.id, { description: "no clipboard — referenced inline" });
+    }
+  };
+
+  const refreshAll = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await reloadChunks();
+      toast.success("Memory refreshed");
+    } catch {
+      toast.error("Refresh failed");
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[#04060c] text-white antialiased">
@@ -359,13 +392,36 @@ export default function MemoryExplorer() {
                 <div className="flex items-center gap-2">
                   <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[11px] uppercase tracking-[0.25em] text-white/50 backdrop-blur">
                     <Atom className="h-3.5 w-3.5 text-purple-300" />
-                    <span>vectors</span>
-                    <span className="font-mono text-purple-300">2.4M</span>
+                    <span>chunks</span>
+                    <span className="font-mono text-purple-300">
+                      {chunks.length > 0 ? chunks.length.toLocaleString() : "—"}
+                    </span>
                   </div>
-                  <button className="group relative inline-flex items-center gap-2 overflow-hidden rounded-lg px-4 py-2 text-xs text-black">
-                    <span className="absolute inset-0 bg-gradient-to-r from-cyan-300 to-purple-300" />
-                    <BookmarkPlus className="relative h-3.5 w-3.5" />
-                    <span className="relative">Save Context</span>
+                  <button
+                    type="button"
+                    onClick={() => void refreshAll()}
+                    disabled={refreshing}
+                    title="Re-pull /api/memory"
+                    aria-label="Refresh memory"
+                    className="inline-flex items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] p-2 text-white/65 transition hover:border-cyan-300/30 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {refreshing ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <RefreshCcw className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    disabled
+                    title="Saving context bundles ships in v2 alongside the long-term memory store"
+                    className="group relative inline-flex cursor-not-allowed items-center gap-2 overflow-hidden rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white/55 opacity-70"
+                  >
+                    <BookmarkPlus className="h-3.5 w-3.5" />
+                    <span>Save Context</span>
+                    <span className="ml-1 rounded-full border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[9px] uppercase tracking-[0.2em] text-white/45">
+                      Soon
+                    </span>
                   </button>
                 </div>
               }
@@ -408,14 +464,14 @@ export default function MemoryExplorer() {
                   </button>
                   <kbd className="hidden rounded border border-white/10 bg-black/40 px-1.5 py-0.5 font-mono text-[10px] text-white/40 sm:inline">↵</kbd>
                   <span className="ml-2 inline-flex items-center gap-1 text-[10px] text-cyan-300">
-                    <Zap className="h-3 w-3" /> {tps} t/s
+                    <Zap className="h-3 w-3" /> k=8
                   </span>
                 </div>
                 {searchNote ? (
                   <p className="mt-2 text-[11px] text-amber-300/90">{searchNote}</p>
                 ) : null}
                 <div className="mt-3 flex flex-wrap gap-2">
-                  {retrievalSamples.map((s) => (
+                  {RETRIEVAL_SAMPLES.map((s) => (
                     <button
                       key={s.q}
                       onClick={() => {
@@ -423,13 +479,11 @@ export default function MemoryExplorer() {
                         setSearchNote(null);
                         void runSearch(s.q);
                       }}
+                      title={s.hint}
                       className="group flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.02] px-3 py-1.5 text-[11px] text-white/70 hover:border-cyan-300/30 hover:text-white"
                     >
+                      <Sparkles className="h-3 w-3 text-cyan-300" />
                       <span>{s.q}</span>
-                      <span className="text-white/40">·</span>
-                      <span className="text-cyan-300">{s.matches} matches</span>
-                      <span className="text-white/40">·</span>
-                      <span className="tabular-nums text-emerald-300">ϕ {s.top}</span>
                     </button>
                   ))}
                 </div>
@@ -489,42 +543,57 @@ export default function MemoryExplorer() {
                   </span>
                 </div>
                 <div className="space-y-2 p-3">
-                  {chunksLoading && !searchHits
-                    ? Array.from({ length: 5 }).map((_, i) => (
-                        <div key={i} className="rounded-lg border border-white/5 bg-white/[0.02] p-3">
-                          <div className="flex items-center justify-between">
-                            <Skeleton className="h-3 w-24 bg-white/10" />
-                            <Skeleton className="h-3 w-16 bg-white/5" />
-                          </div>
-                          <Skeleton className="mt-2 h-4 w-full bg-white/10" />
-                          <Skeleton className="mt-1 h-3 w-3/4 bg-white/5" />
+                  {chunksLoading && !searchHits ? (
+                    Array.from({ length: 5 }).map((_, i) => (
+                      <div key={i} className="rounded-lg border border-white/5 bg-white/[0.02] p-3">
+                        <div className="flex items-center justify-between">
+                          <Skeleton className="h-3 w-24 bg-white/10" />
+                          <Skeleton className="h-3 w-16 bg-white/5" />
                         </div>
-                      ))
-                    : displayRetrieved.map((m, i) => (
-                    <motion.div
-                      key={`${m.id}-${i}`}
-                      initial={{ opacity: 0, y: 4 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: i * 0.05 }}
-                      className="relative rounded-lg border border-white/5 bg-white/[0.02] p-3 hover:border-cyan-300/30"
-                    >
-                      <div className="absolute left-0 top-0 h-full w-0.5 rounded-full" style={{ background: m.c }} />
-                      <div className="flex items-center justify-between text-[10px]">
-                        <span className="font-mono text-white/40">{m.id}</span>
-                        <span className="inline-flex items-center gap-1 text-emerald-300">
-                          <span className="tabular-nums">ϕ {m.rel}</span>
-                          <span className="text-white/30">· {m.age} ago</span>
-                        </span>
+                        <Skeleton className="mt-2 h-4 w-full bg-white/10" />
+                        <Skeleton className="mt-1 h-3 w-3/4 bg-white/5" />
                       </div>
-                      <div className="mt-1 line-clamp-2 text-[12px] text-white/85">{m.t}</div>
-                      <div className="mt-1.5 flex items-center justify-between text-[10px] text-white/45">
-                        <span>by {m.agent}</span>
-                        <span className="inline-flex items-center gap-1 text-cyan-300">
-                          <ChevronRight className="h-2.5 w-2.5" /> open
-                        </span>
+                    ))
+                  ) : displayRetrieved.length === 0 ? (
+                    <div className="grid place-items-center p-6 text-center text-[11px] text-white/45">
+                      <Brain className="mb-2 h-6 w-6 text-white/25" />
+                      <div className="text-sm text-white/65">No memory chunks yet</div>
+                      <div className="mt-1">
+                        Chunks appear here once agents store reasoning during a mission. Try a search above,
+                        or run a swarm in Agent Workspace.
                       </div>
-                    </motion.div>
-                  ))}
+                    </div>
+                  ) : (
+                    displayRetrieved.map((m, i) => (
+                      <motion.button
+                        key={`${m.id}-${i}`}
+                        type="button"
+                        onClick={() => openChunkSource(m)}
+                        title={m.missionId ? `Open ${m.missionId} in Agent Workspace` : "Copy chunk id"}
+                        initial={{ opacity: 0, y: 4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: i * 0.05 }}
+                        className="relative block w-full cursor-pointer rounded-lg border border-white/5 bg-white/[0.02] p-3 text-left transition hover:border-cyan-300/30 hover:bg-white/[0.04]"
+                      >
+                        <div className="absolute left-0 top-0 h-full w-0.5 rounded-full" style={{ background: m.c }} />
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className="font-mono text-white/40">{m.id.length > 14 ? `${m.id.slice(0, 6)}…${m.id.slice(-6)}` : m.id}</span>
+                          <span className="inline-flex items-center gap-1 text-emerald-300">
+                            <span className="tabular-nums">ϕ {m.rel.toFixed(2)}</span>
+                            <span className="text-white/30">· {m.age}</span>
+                          </span>
+                        </div>
+                        <div className="mt-1 line-clamp-2 text-[12px] text-white/85">{m.t}</div>
+                        <div className="mt-1.5 flex items-center justify-between text-[10px] text-white/45">
+                          <span>{m.agent}</span>
+                          <span className="inline-flex items-center gap-1 text-cyan-300">
+                            <ChevronRight className="h-2.5 w-2.5" />
+                            {m.missionId ? "open mission" : "copy id"}
+                          </span>
+                        </div>
+                      </motion.button>
+                    ))
+                  )}
                 </div>
               </Card>
             </div>
@@ -540,14 +609,25 @@ export default function MemoryExplorer() {
                   <span className="text-[10px] uppercase tracking-[0.25em] text-white/40">connected · reusable</span>
                 </div>
                 <div className="grid gap-3 p-4 md:grid-cols-3">
-                  {[
-                    { l: "Reusable Workflows",  v: "184", sub: "+12 this week", c: "#a855f7", i: GitBranch },
-                    { l: "Connected Missions",  v: "248", sub: "92% recall",    c: "#22d3ee", i: Hexagon },
-                    { l: "Knowledge Vectors",   v: "2.4M",sub: "ϕ avg 0.84",    c: "#f59e0b", i: Atom },
-                    { l: "Semantic Clusters",   v: "42",  sub: "auto-grouped",  c: "#10b981", i: Sparkles },
-                    { l: "Embedded Outputs",    v: "1.2k",sub: "+184 today",    c: "#3b82f6", i: Database },
-                    { l: "Active Recalls",      v: "318", sub: "k=8 default",   c: "#ec4899", i: Brain },
-                  ].map((x, i) => (
+                  {(() => {
+                    const totalChunks = chunks.length;
+                    const missionScopedChunks = chunks.filter((c) => !!c.missionId).length;
+                    const sharedChunks = totalChunks - missionScopedChunks;
+                    const uniqueMissions = new Set(chunks.map((c) => c.missionId).filter(Boolean)).size;
+                    const userMissionCount = missions.length;
+                    const dims = chunks.find((c) => c.embeddingDims)?.embeddingDims ?? null;
+                    const avgScore = totalChunks > 0
+                      ? chunks.reduce((s, c) => s + (typeof c.score === "number" ? c.score : 0), 0) / totalChunks
+                      : null;
+                    return [
+                      { l: "Chunks indexed",     v: totalChunks > 0 ? totalChunks.toLocaleString() : "—",     sub: totalChunks > 0 ? "live · /api/memory" : "no chunks yet",    c: "#a855f7", i: Database },
+                      { l: "Your missions",      v: userMissionCount > 0 ? String(userMissionCount) : "—",  sub: userMissionCount > 0 ? `${historicalMissions.length} indexed below` : "no missions yet", c: "#22d3ee", i: Hexagon },
+                      { l: "Embedding dims",     v: dims != null ? dims.toLocaleString() : "—",              sub: dims != null ? "vector width" : "no embeddings",              c: "#f59e0b", i: Atom },
+                      { l: "Missions referenced", v: uniqueMissions > 0 ? String(uniqueMissions) : "—",      sub: uniqueMissions > 0 ? "unique scopes" : "—",                   c: "#10b981", i: Sparkles },
+                      { l: "Shared chunks",      v: totalChunks > 0 ? String(sharedChunks) : "—",            sub: totalChunks > 0 ? "no mission scope" : "—",                   c: "#3b82f6", i: Brain },
+                      { l: "Avg relevance",      v: avgScore != null && avgScore > 0 ? `ϕ ${avgScore.toFixed(2)}` : "—", sub: avgScore != null && avgScore > 0 ? "score · last query" : "run a query above", c: "#ec4899", i: GitBranch },
+                    ];
+                  })().map((x, i) => (
                     <motion.div
                       key={x.l}
                       initial={{ opacity: 0, y: 6 }}
@@ -577,55 +657,89 @@ export default function MemoryExplorer() {
                   <span className="text-[10px] uppercase tracking-[0.25em] text-amber-300">archive</span>
                 </div>
                 <div className="space-y-2 p-3">
-                  {historicalMissions.map((m, i) => (
-                    <motion.div
-                      key={m.id}
-                      initial={{ opacity: 0, x: -6 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: i * 0.05 }}
-                      className="relative rounded-lg border border-white/5 bg-white/[0.02] p-3"
-                    >
-                      <div className="flex items-center justify-between text-[11px]">
-                        <span className="font-mono text-white/40">{m.id}</span>
-                        <span className="text-white/45">{m.ms}</span>
-                      </div>
-                      <div className="mt-1 truncate text-sm text-white/90">{m.t}</div>
-                      <div className="mt-2 grid grid-cols-2 gap-2 text-[10px]">
-                        <div className="rounded-md bg-white/[0.03] px-2 py-1">
-                          <div className="text-white/40">Agents</div>
-                          <div className="tabular-nums text-white/85">{m.agents}</div>
-                        </div>
-                        <div className="rounded-md bg-white/[0.03] px-2 py-1">
-                          <div className="text-white/40">Recalls</div>
-                          <div className="tabular-nums text-white/85">{m.recall}</div>
-                        </div>
-                      </div>
-                      <div className="mt-2 flex items-center gap-1.5 text-[10px] text-cyan-300">
-                        <span className="h-1.5 w-1.5 rounded-full" style={{ background: m.c, boxShadow: `0 0 8px ${m.c}` }} />
-                        archived · indexed
-                      </div>
-                    </motion.div>
-                  ))}
+                  {historicalMissions.length === 0 ? (
+                    <div className="grid place-items-center p-6 text-center text-[11px] text-white/45">
+                      <History className="mb-2 h-6 w-6 text-white/25" />
+                      <div className="text-sm text-white/65">No missions yet</div>
+                      <div className="mt-1">Past missions show up here once you launch one.</div>
+                    </div>
+                  ) : (
+                    historicalMissions.map((m, i) => {
+                      const chunkCount = chunks.filter((c) => c.missionId === m.id).length;
+                      return (
+                        <motion.button
+                          key={m.id}
+                          type="button"
+                          onClick={() => {
+                            setActiveMissionIdForWallet(walletPk, m.id);
+                            navigate("/agents");
+                          }}
+                          title={`Open ${m.id} in Agent Workspace`}
+                          initial={{ opacity: 0, x: -6 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ delay: i * 0.05 }}
+                          className="relative block w-full cursor-pointer rounded-lg border border-white/5 bg-white/[0.02] p-3 text-left transition hover:border-cyan-300/30 hover:bg-white/[0.04]"
+                        >
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="font-mono text-white/40">{m.id}</span>
+                            <span className="text-white/45">{m.ms}</span>
+                          </div>
+                          <div className="mt-1 truncate text-sm text-white/90">{m.t}</div>
+                          <div className="mt-2 grid grid-cols-2 gap-2 text-[10px]">
+                            <div className="rounded-md bg-white/[0.03] px-2 py-1">
+                              <div className="text-white/40">Agents</div>
+                              <div className="tabular-nums text-white/85">{m.agents}</div>
+                            </div>
+                            <div className="rounded-md bg-white/[0.03] px-2 py-1">
+                              <div className="text-white/40">Chunks</div>
+                              <div className="tabular-nums text-white/85">{chunkCount > 0 ? chunkCount : "—"}</div>
+                            </div>
+                          </div>
+                          <div className="mt-2 flex items-center justify-between text-[10px]">
+                            <span className="flex items-center gap-1.5 text-cyan-300">
+                              <span className="h-1.5 w-1.5 rounded-full" style={{ background: m.c, boxShadow: `0 0 8px ${m.c}` }} />
+                              {m.status}
+                            </span>
+                            <span className="inline-flex items-center gap-1 text-cyan-300">
+                              <ChevronRight className="h-2.5 w-2.5" /> open
+                            </span>
+                          </div>
+                        </motion.button>
+                      );
+                    })
+                  )}
                 </div>
               </Card>
             </div>
 
-            {/* Vector ops live strip */}
+            {/* Memory index summary — replaces the old "Vector Operations · live"
+                strip that displayed four fabricated counters (12,482 upserts/hr,
+                8,142 queries/hr, 12ms latency, 248MB index size). v1 doesn't
+                track hourly throughput client-side, so these are honest summary
+                stats over the chunks we actually have. */}
             <Card className="mb-6">
               <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
                 <div className="flex items-center gap-2 text-sm">
                   <Activity className="h-4 w-4 text-cyan-300" />
-                  Vector Operations · live
+                  Memory Index Summary
                 </div>
-                <span className="text-[10px] uppercase tracking-[0.25em] text-cyan-300">qdrant#brand</span>
+                <span className="text-[10px] uppercase tracking-[0.25em] text-cyan-300">
+                  {apiConfigured() ? "/api/memory" : "api offline"}
+                </span>
               </div>
               <div className="grid grid-cols-2 gap-px bg-white/5 md:grid-cols-4">
-                {[
-                  { l: "upsert / hr",  v: "12,482", c: "#22d3ee" },
-                  { l: "queries / hr", v: "8,142",  c: "#a855f7" },
-                  { l: "avg latency",  v: "12ms",   c: "#10b981" },
-                  { l: "index size",   v: "248MB",  c: "#f59e0b" },
-                ].map((x) => (
+                {(() => {
+                  const totalChunks = chunks.length;
+                  const dims = chunks.find((c) => c.embeddingDims)?.embeddingDims ?? null;
+                  const scored = chunks.filter((c) => typeof c.score === "number");
+                  const topScore = scored.length > 0 ? Math.max(...scored.map((c) => c.score!)) : null;
+                  return [
+                    { l: "Total chunks", v: totalChunks > 0 ? totalChunks.toLocaleString() : "—",      c: "#22d3ee" },
+                    { l: "Vector width", v: dims != null ? `${dims} dims` : "—",                       c: "#a855f7" },
+                    { l: "Top score",    v: topScore != null ? `ϕ ${topScore.toFixed(2)}` : "—",       c: "#10b981" },
+                    { l: "Status",       v: apiConfigured() ? "online" : "offline",                    c: apiConfigured() ? "#10b981" : "#f59e0b" },
+                  ];
+                })().map((x) => (
                   <div key={x.l} className="bg-[#04060c] px-4 py-4">
                     <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-white/40">
                       <span className="h-1.5 w-1.5 rounded-full" style={{ background: x.c, boxShadow: `0 0 8px ${x.c}` }} />
