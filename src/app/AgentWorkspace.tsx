@@ -1885,6 +1885,56 @@ function AgentWorkspaceMissionBody({
     setAttachments((prev) => prev.filter((a) => a.id !== id));
   }, []);
 
+  // Paste-to-attach — screenshots typically arrive as image/png via the
+  // clipboard's items list with no filename. Pull every File-shaped item out
+  // (covers actual files dragged from Finder too) and funnel through the
+  // same ingestFile pipeline the paperclip uses. Falls through to the
+  // browser's default paste when the clipboard only carries text/plain so
+  // typing a URL still works.
+  const handleComposerPaste = useCallback(
+    async (e: React.ClipboardEvent<HTMLInputElement>) => {
+      const items = e.clipboardData?.items;
+      if (!items || items.length === 0) return;
+      const files: File[] = [];
+      for (const item of Array.from(items)) {
+        if (item.kind !== "file") continue;
+        const f = item.getAsFile();
+        if (!f) continue;
+        // Screenshots arrive with name "" or "image.png" — generate something
+        // descriptive so the chip + persisted artifact path are unambiguous.
+        if (!f.name || f.name === "image.png") {
+          const ext = f.type === "image/jpeg" ? "jpg"
+            : f.type === "image/webp" ? "webp"
+            : f.type === "image/gif"  ? "gif"
+            : f.type === "image/svg+xml" ? "svg"
+            : "png";
+          const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+          files.push(new File([f], `pasted-${stamp}.${ext}`, { type: f.type }));
+        } else {
+          files.push(f);
+        }
+      }
+      if (files.length === 0) return;
+      // Block the default text paste only when we actually grabbed file data —
+      // otherwise plain text pastes get swallowed.
+      e.preventDefault();
+      setAttachmentsBusy(true);
+      try {
+        for (const file of files) {
+          const result = await ingestFile(file);
+          if ("error" in result) {
+            toast.error("Couldn't attach file", { description: result.error });
+            continue;
+          }
+          setAttachments((prev) => [...prev, result]);
+        }
+      } finally {
+        setAttachmentsBusy(false);
+      }
+    },
+    [],
+  );
+
   // Lightweight artifact download — writes the bytes to a Blob and triggers
   // a client-side download with the file's basename. Kept lightweight after
   // the editor rollback so users can still pull files out without a full
@@ -4107,6 +4157,7 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                           value={draft}
                           onChange={(e) => setDraft(e.target.value)}
                           onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && !autoInvoking && sendMessage()}
+                          onPaste={handleComposerPaste}
                           disabled={autoInvoking}
                           placeholder={
                             autoInvoking
