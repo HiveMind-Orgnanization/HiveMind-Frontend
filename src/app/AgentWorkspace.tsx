@@ -370,6 +370,7 @@ function snapshotToWorkspaceSnapshotV1(s: WorkspaceSnapshotV1): WorkspaceSnapsho
 
 /** Pull wallet-scoped workspace from API and merge vs localStorage (authenticated only). */
 async function mergeMissionWorkspaceFromApi(
+  walletPk: string | null,
   missionId: string,
   setters: {
     setMessages: Dispatch<SetStateAction<ChatMsg[]>>;
@@ -381,7 +382,7 @@ async function mergeMissionWorkspaceFromApi(
   if (!apiConfigured() || !getAuthToken()) return;
   const remote = await fetchMissionWorkspaceSnapshotApi(missionId);
   if (!remote) return;
-  const local = loadWorkspaceSnapshot(missionId);
+  const local = loadWorkspaceSnapshot(walletPk, missionId);
   const localTs = local?.updatedAt ?? 0;
   const remoteVacuous = isVacuousWorkspaceSnapshot(remote.snapshot);
   const localRich = Boolean(local && !isVacuousWorkspaceSnapshot(local));
@@ -396,7 +397,7 @@ async function mergeMissionWorkspaceFromApi(
     setters.setLogLines(remote.snapshot.logLines);
     setters.setTimelineEvents(remote.snapshot.timelineEvents);
     setters.setSelectedAgent(remote.snapshot.selectedAgent);
-    persistServerWorkspaceSnapshot(missionId, remote.snapshot, remote.updatedAt);
+    persistServerWorkspaceSnapshot(walletPk, missionId, remote.snapshot, remote.updatedAt);
     return;
   }
   if (local && (local.messages.length > 0 || local.logLines.length > 0 || local.timelineEvents.length > 0)) {
@@ -430,13 +431,13 @@ function finalizeOrphanedInFlightMessages(messages: ChatMsg[]): ChatMsg[] {
   return changed ? out : messages;
 }
 
-function missionWorkspaceSeed(missionId: string): {
+function missionWorkspaceSeed(walletPk: string | null, missionId: string): {
   messages: ChatMsg[];
   logLines: LogLine[];
   timelineEvents: { ts: number; l: string; c: string }[];
   selectedAgent: string;
 } {
-  const persisted = loadWorkspaceSnapshot(missionId);
+  const persisted = loadWorkspaceSnapshot(walletPk, missionId);
   if (persisted) {
     return {
       messages: finalizeOrphanedInFlightMessages(persisted.messages),
@@ -1597,6 +1598,32 @@ function SandpackLivePreview({
     );
   }
 
+  // Artifact tree is empty AND the swarm isn't running. Don't let Sandpack fall back to
+  // its built-in "Hello world" template — surface the real situation instead. This happens
+  // when the mission completed but the backend's artifact rows are missing (per-wallet
+  // mismatch, ephemeral storage rotated, or the swarm never reached the persist step).
+  if (artifacts.length === 0 && !swarmRunning) {
+    return (
+      <div
+        ref={containerRef}
+        className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 rounded-xl border border-amber-300/20 bg-gradient-to-b from-[#1a1308]/70 via-[#0a0708]/80 to-[#040810]/70 p-8 text-center"
+      >
+        <div className="relative flex h-14 w-14 items-center justify-center rounded-full border border-amber-300/30 bg-amber-500/10">
+          <span className="text-2xl">⚠</span>
+        </div>
+        <div className="space-y-1">
+          <div className="text-sm font-medium text-white/95">No preview artifacts for this mission</div>
+          <div className="max-w-md text-xs text-white/55">
+            The chat shows agent activity, but no build artifacts are reachable for the
+            connected wallet. This usually means the mission's files were produced under a
+            different wallet, or the backend's preview cache was rotated. Re-run the swarm
+            from this wallet to regenerate the preview.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-white/10">
       {autoFixing && (
@@ -1667,7 +1694,15 @@ function AgentWorkspaceMissionBody({
   patchLocal: (id: string, patch: Partial<Mission>) => void;
 }) {
   const navigate = useNavigate();
-  const initialWorkspace = useMemo(() => missionWorkspaceSeed(mission.id), [mission.id]);
+  // Wallet pubkey for per-wallet localStorage scoping — used by missionWorkspaceSeed,
+  // loadWorkspaceSnapshot, and saveWorkspaceSnapshot to prevent chat history from
+  // leaking across wallets that happen to view the same mission id.
+  const { publicKey: workspaceWalletPubkey } = useWallet();
+  const workspaceWalletPk = workspaceWalletPubkey?.toBase58() ?? null;
+  const initialWorkspace = useMemo(
+    () => missionWorkspaceSeed(workspaceWalletPk, mission.id),
+    [workspaceWalletPk, mission.id],
+  );
   const [paused, setPaused] = useState(false);
   const [messages, setMessages] = useState<ChatMsg[]>(initialWorkspace.messages);
   const [draft, setDraft] = useState("");
@@ -1941,7 +1976,7 @@ function AgentWorkspaceMissionBody({
     const run = async () => {
       try {
         if (cancelled) return;
-        await mergeMissionWorkspaceFromApi(mission.id, {
+        await mergeMissionWorkspaceFromApi(workspaceWalletPk, mission.id, {
           setMessages,
           setLogLines,
           setTimelineEvents,
@@ -1962,7 +1997,7 @@ function AgentWorkspaceMissionBody({
 
   // LocalStorage always; debounced PUT to API when authenticated.
   useEffect(() => {
-    saveWorkspaceSnapshot(mission.id, { messages, logLines, timelineEvents, selectedAgent });
+    saveWorkspaceSnapshot(workspaceWalletPk, mission.id, { messages, logLines, timelineEvents, selectedAgent });
     if (!apiConfigured() || !getAuthToken()) return;
     if (
       !workspaceMergeDone &&
@@ -1986,7 +2021,7 @@ function AgentWorkspaceMissionBody({
       void putMissionWorkspaceSnapshotApi(mission.id, body).then((serverTs) => {
         const ts =
           typeof serverTs === "number" && Number.isFinite(serverTs) ? serverTs : Date.now();
-        saveWorkspaceSnapshot(mission.id, { messages, logLines, timelineEvents, selectedAgent, updatedAt: ts });
+        saveWorkspaceSnapshot(workspaceWalletPk, mission.id, { messages, logLines, timelineEvents, selectedAgent, updatedAt: ts });
       });
     }, 600);
     return () => window.clearTimeout(workspacePutTimerRef.current);
@@ -2554,7 +2589,7 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
       return;
     }
     // Restore session from localStorage immediately (offline / before API returns).
-    const priorSync = loadWorkspaceSnapshot(mission.id);
+    const priorSync = loadWorkspaceSnapshot(workspaceWalletPk, mission.id);
     const hadLocalPersisted =
       priorSync !== null &&
       (priorSync.messages.length > 0 || priorSync.logLines.length > 0 || priorSync.timelineEvents.length > 0);
@@ -2566,13 +2601,13 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
 
     void (async () => {
       // When signed in, pull remote workspace before starting a new swarm (cross-device).
-      await mergeMissionWorkspaceFromApi(mission.id, {
+      await mergeMissionWorkspaceFromApi(workspaceWalletPk, mission.id, {
         setMessages,
         setLogLines,
         setTimelineEvents,
         setSelectedAgent,
       });
-      const afterMerge = loadWorkspaceSnapshot(mission.id);
+      const afterMerge = loadWorkspaceSnapshot(workspaceWalletPk, mission.id);
       const hadAfterMerge =
         afterMerge !== null &&
         (afterMerge.messages.length > 0 || afterMerge.logLines.length > 0 || afterMerge.timelineEvents.length > 0);
