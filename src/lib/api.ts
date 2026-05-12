@@ -1,5 +1,6 @@
 import type { Mission } from "../app/store";
 import { getAuthToken } from "./auth-token";
+import { isCancelled } from "./swarm-tracker";
 import {
   coerceWorkspaceSnapshotFromApi,
   type WorkspaceSnapshotV1,
@@ -215,6 +216,9 @@ async function pollSwarmJob(
   const MAX_MS = 20 * 60_000;
   let pollIdx = 0;
   while (elapsedMs < MAX_MS) {
+    if (isCancelled(missionId)) {
+      return { ok: false, status: 0, message: "Stopped by user." };
+    }
     const intervalMs = pollIdx < FAST_POLLS ? FAST_INTERVAL_MS : SLOW_INTERVAL_MS;
     await new Promise<void>((res) => setTimeout(res, intervalMs));
     elapsedMs += intervalMs;
@@ -702,6 +706,7 @@ export type InvokeAgentApiResult =
 async function pollInvokeJob(
   agentId: string,
   jobId: string,
+  missionId?: string,
 ): Promise<InvokeAgentApiResult> {
   const statusPath = `/api/agents/${encodeURIComponent(agentId)}/invoke-status/${encodeURIComponent(jobId)}`;
   const FAST_MS = 1500;
@@ -709,6 +714,9 @@ async function pollInvokeJob(
   let elapsed = 0;
   const BUDGET_MS = 5 * 60_000;
   for (let i = 0; elapsed < BUDGET_MS; i++) {
+    if (missionId && isCancelled(missionId)) {
+      return { ok: false, reason: "network" };
+    }
     const wait = i < 8 ? FAST_MS : SLOW_MS;
     await new Promise<void>((r) => setTimeout(r, wait));
     elapsed += wait;
@@ -744,10 +752,11 @@ async function pollInvokeJob(
 export async function resumeInvokePollApi(
   agentId: string,
   jobId: string,
+  missionId?: string,
 ): Promise<InvokeAgentApiResult> {
   if (!apiConfigured()) return { ok: false, reason: "network" };
   try {
-    return await pollInvokeJob(agentId, jobId);
+    return await pollInvokeJob(agentId, jobId, missionId);
   } catch {
     return { ok: false, reason: "network" };
   }
@@ -792,7 +801,7 @@ export async function invokeAgentApi(
     if (!jobId) return invokeAgentSync(agentId, body);
     options?.onJobIdAssigned?.(jobId);
 
-    return await pollInvokeJob(agentId, jobId);
+    return await pollInvokeJob(agentId, jobId, body.missionId);
   } catch {
     return { ok: false, reason: "network" };
   }

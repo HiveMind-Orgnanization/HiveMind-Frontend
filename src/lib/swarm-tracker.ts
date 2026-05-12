@@ -112,6 +112,28 @@ export function hasActiveJob(missionId: string): boolean {
   return getActiveJob(missionId) !== null;
 }
 
+// ---- User-initiated cancellation -----------------------------------------
+//
+// The Stop button on the chat composer sets a cancellation flag for the
+// mission. Both poll loops (pollSwarmJob, pollInvokeJob) check this flag on
+// every iteration and bail out early when set. The backend job will keep
+// running to completion server-side — there's no remote cancel endpoint yet
+// — but the client stops polling and frees up the UI.
+
+const cancelled = new Set<string>();
+
+export function markCancelled(missionId: string): void {
+  cancelled.add(missionId);
+}
+
+export function clearCancelled(missionId: string): void {
+  cancelled.delete(missionId);
+}
+
+export function isCancelled(missionId: string): boolean {
+  return cancelled.has(missionId);
+}
+
 // ---- Legacy compatibility shims for swarm-only callers ----
 
 export function markSwarmStarted(missionId: string, jobId: string, hmId = 0): void {

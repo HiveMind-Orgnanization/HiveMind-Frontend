@@ -9,6 +9,7 @@ import {
   ChevronDown, ChevronRight, File, Folder, Download,
   LayoutPanelLeft, Code2, ExternalLink, X,
   FolderOpen, Sparkles, Maximize2, Minimize2, type LucideIcon,
+  Square, Copy, RotateCcw, Check,
 } from "lucide-react";
 import { Sidebar } from "./components/dashboard/sidebar";
 import { TopNav } from "./components/dashboard/topnav";
@@ -53,6 +54,9 @@ import {
   markJobStarted,
   markJobFinished,
   getActiveJob,
+  markCancelled,
+  clearCancelled,
+  isCancelled,
 } from "../lib/swarm-tracker";
 import { getAuthToken } from "../lib/auth-token";
 import {
@@ -937,11 +941,27 @@ function diffLineCounts(beforeMap: Map<string, string>, afterByPath: Record<stri
 }
 
 /** Main HiveMind message — Claude-style with live timer, thought chain, and final reply. */
-function HiveMindSwarmBubble({ m }: { m: ChatMsg }) {
+function HiveMindSwarmBubble({ m, onRegenerate }: { m: ChatMsg; onRegenerate?: (id: number) => void }) {
   const [open, setOpen] = useState(true);
   const [elapsed, setElapsed] = useState(0);
+  const [copied, setCopied] = useState(false);
   const done = m.state === "approved" || m.state === "failed";
   const thoughts = m.thoughts ?? [];
+
+  const copyText = async () => {
+    const body = (m.text ?? "").trim();
+    if (!body) {
+      toast.message("Nothing to copy yet");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(body);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      toast.error("Clipboard unavailable");
+    }
+  };
 
   useEffect(() => {
     if (done) return;
@@ -1048,6 +1068,35 @@ function HiveMindSwarmBubble({ m }: { m: ChatMsg }) {
       {m.state === "failed" && !m.text && (
         <p className="text-[13px] text-red-400/80">Swarm run failed. Try again.</p>
       )}
+
+      {/* Message actions — Copy + Regenerate, only on finalized bubbles */}
+      {done && (
+        <div className="mt-1.5 flex items-center gap-1 text-[11px]">
+          <button
+            type="button"
+            onClick={copyText}
+            disabled={!m.text || m.text.trim().length === 0}
+            title="Copy message"
+            aria-label="Copy message"
+            className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.02] px-2 py-1 text-white/55 transition hover:border-white/25 hover:text-white disabled:opacity-40 disabled:hover:border-white/10"
+          >
+            {copied ? <Check className="h-3 w-3 text-emerald-300" /> : <Copy className="h-3 w-3" />}
+            <span>{copied ? "Copied" : "Copy"}</span>
+          </button>
+          {onRegenerate && (
+            <button
+              type="button"
+              onClick={() => onRegenerate(m.id)}
+              title="Regenerate from the last operator message"
+              aria-label="Regenerate"
+              className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.02] px-2 py-1 text-white/55 transition hover:border-cyan-300/35 hover:text-cyan-200"
+            >
+              <RotateCcw className="h-3 w-3" />
+              <span>Regenerate</span>
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1069,8 +1118,8 @@ function SystemNotice({ m }: { m: ChatMsg }) {
 }
 
 /** Route a ChatMsg to the correct visual component — Claude-style: only HiveMind + User. */
-function ChatBubble({ m }: { m: ChatMsg }) {
-  if (m.kind === "hivemind_swarm") return <HiveMindSwarmBubble m={m} />;
+function ChatBubble({ m, onRegenerate }: { m: ChatMsg; onRegenerate?: (id: number) => void }) {
+  if (m.kind === "hivemind_swarm") return <HiveMindSwarmBubble m={m} onRegenerate={onRegenerate} />;
   if (m.kind === "system" || m.kind === "system_done" || m.kind === "system_warn") return <SystemNotice m={m} />;
   if (m.agent === "Operator") return <UserBubble m={m} />;
   return null;
@@ -3251,6 +3300,68 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
     }
   };
 
+  // Stop the in-flight agent run. The poll loops watch swarm-tracker's
+  // isCancelled() flag and bail out on the next iteration, so this returns
+  // immediately even if a fetch is mid-flight. Backend job keeps running
+  // server-side (no remote cancel endpoint yet) but the UI is freed up.
+  const stopRun = useCallback(() => {
+    markCancelled(mission.id);
+    setAutoInvoking(false);
+    isSendingRef.current = false;
+    markJobFinished(mission.id);
+    const stoppedTs = new Date().toLocaleTimeString("en-US", { hour12: false });
+    setMessages((prev) => prev.map((m) => {
+      if (m.state !== "thinking" && m.state !== "delegating" && m.state !== "executing") return m;
+      const thoughts = (m.thoughts ?? []).map((t) => t.done ? t : { ...t, done: true });
+      return {
+        ...m,
+        state: "failed" as const,
+        thoughts,
+        text: m.text && m.text.trim().length > 0 ? m.text : "Stopped by user.",
+        ts: stoppedTs,
+      };
+    }));
+    publishLocalActivity({ agent: "Operator", message: "[stop] cancelled by user", ts: Date.now() });
+    toast.message("Agent run stopped", { description: "The backend job may still finish server-side." });
+  }, [mission.id]);
+
+  // Regenerate the last assistant turn. Finds the most recent Operator message
+  // that comes BEFORE the given assistant bubble id, drops the assistant bubble
+  // (so the chat doesn't double up), and re-sends the operator's prompt
+  // through the same orchestration path. If the agent run is currently in
+  // progress for this mission, we no-op — the user must Stop first.
+  const regenerateFrom = useCallback((assistantMsgId: number) => {
+    if (isSendingRef.current || autoInvoking) {
+      toast.message("Agent is still running", { description: "Stop the current run first." });
+      return;
+    }
+    setMessages((prev) => {
+      const idx = prev.findIndex((m) => m.id === assistantMsgId);
+      if (idx < 0) return prev;
+      // Walk back to the nearest Operator (user) message.
+      for (let i = idx - 1; i >= 0; i--) {
+        if (prev[i]?.agent === "Operator") {
+          const userText = (prev[i] as { text?: string }).text ?? "";
+          if (!userText.trim()) return prev;
+          // Drop the assistant bubble + every later bubble so re-send is clean.
+          const trimmed = prev.slice(0, i + 1);
+          // Defer the actual send until after state commits.
+          window.setTimeout(() => {
+            setDraft(userText);
+            window.setTimeout(() => sendMessageRef.current?.(), 0);
+          }, 0);
+          return trimmed;
+        }
+      }
+      return prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoInvoking]);
+
+  // Forward ref so regenerateFrom can call sendMessage that's defined further
+  // down. (sendMessage closes over many later-declared refs/state.)
+  const sendMessageRef = useRef<(() => void) | null>(null);
+
   const sendMessage = () => {
     if (!draft.trim() || isSendingRef.current) return;
     // If the mission already settled and the free follow-up quota is exhausted, pop the
@@ -3265,6 +3376,9 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
     if (missionCompleted) {
       patchLocal(mission.id, { followUpCount: followUpCount + 1 });
     }
+    // A new send clears any earlier "stop" flag so the poll loops don't bail
+    // out before the new request even fires.
+    clearCancelled(mission.id);
     isSendingRef.current = true;
     previewAutoFixAttemptsRef.current = 0; // new message → fresh auto-fix budget
     const text = draft.trim();
@@ -3595,6 +3709,9 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
     })();
   };
 
+  // Expose sendMessage to regenerateFrom (declared above before sendMessage).
+  sendMessageRef.current = sendMessage;
+
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[#04060c] text-white antialiased">
       {!workspaceFullscreen && <Sidebar />}
@@ -3682,7 +3799,7 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                           exit={{ opacity: 0, y: -4 }}
                           transition={{ duration: 0.22 }}
                         >
-                          <ChatBubble m={m} />
+                          <ChatBubble m={m} onRegenerate={regenerateFrom} />
                         </motion.div>
                       ))}
                     </AnimatePresence>
@@ -3734,23 +3851,37 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                       <input
                         value={draft}
                         onChange={(e) => setDraft(e.target.value)}
-                        onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendMessage()}
+                        onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && !autoInvoking && sendMessage()}
+                        disabled={autoInvoking}
                         placeholder={
-                          followUpRequiresPayment
+                          autoInvoking
+                            ? "Agent is running — click Stop to cancel…"
+                            : followUpRequiresPayment
                             ? `Top up ${FOLLOWUP_PAID_SOL} SOL to continue chatting…`
                             : "Ask the swarm a question…"
                         }
-                        className="w-full rounded-lg border border-white/10 bg-black/50 py-2 pl-3 pr-10 text-[13px] text-white/90 placeholder:text-white/25 focus:border-cyan-300/35 focus:outline-none"
+                        className="w-full rounded-lg border border-white/10 bg-black/50 py-2 pl-3 pr-10 text-[13px] text-white/90 placeholder:text-white/25 focus:border-cyan-300/35 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
                       />
-                      <button
-                        onClick={sendMessage}
-                        disabled={!draft.trim()}
-                        title={followUpRequiresPayment ? `Send (requires ${FOLLOWUP_PAID_SOL} SOL)` : undefined}
-                        className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md bg-gradient-to-r from-cyan-400 to-purple-400 p-1.5 text-black disabled:opacity-40"
-                        aria-label="Send"
-                      >
-                        <Send className="h-3.5 w-3.5" />
-                      </button>
+                      {autoInvoking ? (
+                        <button
+                          onClick={stopRun}
+                          title="Stop the agent run"
+                          aria-label="Stop"
+                          className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md border border-rose-300/40 bg-rose-300/15 p-1.5 text-rose-200 hover:bg-rose-300/25"
+                        >
+                          <Square className="h-3.5 w-3.5 fill-current" />
+                        </button>
+                      ) : (
+                        <button
+                          onClick={sendMessage}
+                          disabled={!draft.trim()}
+                          title={followUpRequiresPayment ? `Send (requires ${FOLLOWUP_PAID_SOL} SOL)` : undefined}
+                          className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md bg-gradient-to-r from-cyan-400 to-purple-400 p-1.5 text-black disabled:opacity-40"
+                          aria-label="Send"
+                        >
+                          <Send className="h-3.5 w-3.5" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 </Card>
