@@ -2,10 +2,16 @@ import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { Search, Bell, ChevronDown, Plus, Radio, CheckCircle2, Clock, XCircle } from "lucide-react";
 import { Link, useNavigate } from "react-router";
+import { useWallet } from "@solana/wallet-adapter-react";
 import { WalletButton } from "./wallet-button";
 import { useCommandPalette } from "../../contexts/CommandPaletteContext";
 import { useNotifications } from "../../contexts/NotificationsContext";
-import { useMissions, type Mission } from "../../store";
+import {
+  useMissions,
+  getActiveMissionId,
+  setActiveMissionIdForWallet,
+  type Mission,
+} from "../../store";
 
 const STATUS_ICON: Record<string, { icon: typeof Radio; color: string }> = {
   active:    { icon: Radio,         color: "#22d3ee" },
@@ -21,26 +27,36 @@ function statusDot(status: string) {
 
 function MissionSwitcher() {
   const { missions } = useMissions();
+  const { publicKey } = useWallet();
+  const walletPk = publicKey?.toBase58() ?? null;
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0 });
 
+  // Active mission id is keyed per-wallet so switching wallets doesn't carry over the
+  // previous wallet's selection. The previous global "hm-active-mission-id" key is the
+  // root cause of "I switched wallets but still see the old mission" — wallet-scoped
+  // storage means new wallets start with `null` and fall back to their first mission.
   const [activeMissionId, setActiveMissionId] = useState<string | null>(
-    () => localStorage.getItem("hm-active-mission-id"),
+    () => getActiveMissionId(walletPk),
   );
 
-  // Sync if localStorage changes from MissionCreate navigation
+  // Re-read on wallet change AND on mission updates so the switcher always reflects
+  // what's stored for the *current* wallet.
   useEffect(() => {
-    const onStorage = () => setActiveMissionId(localStorage.getItem("hm-active-mission-id"));
-    window.addEventListener("storage", onStorage);
-    window.addEventListener("hm-missions-updated", onStorage);
+    setActiveMissionId(getActiveMissionId(walletPk));
+    const onChange = () => setActiveMissionId(getActiveMissionId(walletPk));
+    window.addEventListener("storage", onChange);
+    window.addEventListener("hm-missions-updated", onChange);
+    window.addEventListener("hm-active-mission-changed", onChange);
     return () => {
-      window.removeEventListener("storage", onStorage);
-      window.removeEventListener("hm-missions-updated", onStorage);
+      window.removeEventListener("storage", onChange);
+      window.removeEventListener("hm-missions-updated", onChange);
+      window.removeEventListener("hm-active-mission-changed", onChange);
     };
-  }, []);
+  }, [walletPk]);
 
   // Close on outside click — check both the trigger button and the portal dropdown
   useEffect(() => {
@@ -71,10 +87,9 @@ function MissionSwitcher() {
     missions[0];
 
   function selectMission(m: Mission) {
-    localStorage.setItem("hm-active-mission-id", m.id);
+    setActiveMissionIdForWallet(walletPk, m.id);
     setActiveMissionId(m.id);
     setOpen(false);
-    window.dispatchEvent(new CustomEvent("hm-active-mission-changed", { detail: { id: m.id } }));
     navigate("/agents");
   }
 

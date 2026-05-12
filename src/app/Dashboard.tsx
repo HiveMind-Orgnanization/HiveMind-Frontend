@@ -13,7 +13,8 @@ import { CoordGraph } from "./components/dashboard/coord-graph";
 import { Particles } from "./components/particles";
 import { TrialBanner } from "./components/TrialBanner";
 import { WalletGate } from "./components/WalletGate";
-import { useMissions } from "./store";
+import { useMissions, getActiveMissionId, setActiveMissionIdForWallet } from "./store";
+import { useWallet } from "@solana/wallet-adapter-react";
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { toast } from "sonner";
 import { apiConfigured, swarmRunMissionApi } from "../lib/api";
@@ -64,7 +65,23 @@ function Sparkline({ color = "#22d3ee" }: { color?: string }) {
 export default function Dashboard() {
   const navigate = useNavigate();
   const { missions, remove, reset, patchLocal, walletConnected } = useMissions();
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const { publicKey } = useWallet();
+  const walletPk = publicKey?.toBase58() ?? null;
+  // Seed the active mission id from per-wallet storage so a fresh page load on the
+  // Dashboard goes straight to the wallet's last-active mission instead of jumping to
+  // missions[0]. Resets explicitly when the wallet changes, so switching wallets never
+  // carries over the previous wallet's selection.
+  const [activeId, setActiveId] = useState<string | null>(() => getActiveMissionId(walletPk));
+  useEffect(() => {
+    setActiveId(getActiveMissionId(walletPk));
+    const sync = () => setActiveId(getActiveMissionId(walletPk));
+    window.addEventListener("hm-active-mission-changed", sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener("hm-active-mission-changed", sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, [walletPk]);
   const active = missions.find((m) => m.id === activeId) ?? missions[0];
   const paused = active?.status === "paused";
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -1076,7 +1093,9 @@ export default function Dashboard() {
                     const next = missions.find((m) => m.id !== active.id);
                     if (next) {
                       setActiveId(next.id);
+                      setActiveMissionIdForWallet(walletPk, next.id);
                     } else {
+                      setActiveMissionIdForWallet(walletPk, null);
                       navigate("/missions/new");
                     }
                   }}

@@ -56,8 +56,34 @@ export const FOLLOWUP_PAID_SOL = 0.05;
 /** Per-wallet localStorage key — missions from different wallets must not co-mingle.
  *  Use a placeholder when no wallet is connected so we never write into a "global" bucket. */
 const LEGACY_KEY = "hm-missions";
+const LEGACY_ACTIVE_MISSION_KEY = "hm-active-mission-id";
 function missionsKey(walletPk: string | null): string {
   return walletPk ? `hm-missions:${walletPk}` : "hm-missions:guest";
+}
+
+/** Per-wallet key for the currently-active mission id. Used by the topnav switcher and
+ *  the agent workspace to remember which mission the user was last looking at. Scoped
+ *  per-wallet so switching wallets does NOT leak the old wallet's mission pointer into
+ *  the new wallet's session (which produced "I switched wallets but still see the old
+ *  mission" bug reports). */
+export function activeMissionKey(walletPk: string | null): string {
+  return walletPk ? `hm-active-mission-id:${walletPk}` : "hm-active-mission-id:guest";
+}
+
+/** Read the active mission id for the connected wallet. */
+export function getActiveMissionId(walletPk: string | null): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(activeMissionKey(walletPk));
+}
+
+/** Persist the active mission id for the connected wallet + broadcast a custom event so
+ *  topnav/sidebar/dashboard all re-sync without needing a full reload. */
+export function setActiveMissionIdForWallet(walletPk: string | null, missionId: string | null) {
+  if (typeof window === "undefined") return;
+  const key = activeMissionKey(walletPk);
+  if (missionId) localStorage.setItem(key, missionId);
+  else localStorage.removeItem(key);
+  window.dispatchEvent(new CustomEvent("hm-active-mission-changed", { detail: { id: missionId } }));
 }
 
 const seed: Mission[] = [
@@ -94,10 +120,12 @@ function write(walletPk: string | null, list: Mission[]) {
   window.dispatchEvent(new CustomEvent("hm-missions-updated"));
 }
 
-/** One-time cleanup: nuke the pre-fix `hm-missions` global key so it can't leak across wallets. */
+/** One-time cleanup: nuke the pre-fix global keys (`hm-missions`, `hm-active-mission-id`)
+ *  so they can't leak across wallets. Per-wallet variants replace them. */
 function purgeLegacyMissionsKey() {
   if (typeof window === "undefined") return;
   try { localStorage.removeItem(LEGACY_KEY); } catch { /* ignore */ }
+  try { localStorage.removeItem(LEGACY_ACTIVE_MISSION_KEY); } catch { /* ignore */ }
 }
 
 /** Union server + local-only missions (same id → prefer server row). */

@@ -16,7 +16,15 @@ import { PageHeader } from "./components/dashboard/page-header";
 import { Particles } from "./components/particles";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { PublicKey, SystemProgram, Transaction, LAMPORTS_PER_SOL } from "@solana/web3.js";
-import { useMissions, ALL_AGENTS, FOLLOWUP_FREE_QUOTA, FOLLOWUP_PAID_SOL, type Mission } from "./store";
+import {
+  useMissions,
+  ALL_AGENTS,
+  FOLLOWUP_FREE_QUOTA,
+  FOLLOWUP_PAID_SOL,
+  getActiveMissionId,
+  setActiveMissionIdForWallet,
+  type Mission,
+} from "./store";
 
 /** Where each paid follow-up message lands on-chain. Same recipient as the Treasury page. */
 const FOLLOWUP_RECIPIENT_PUBKEY =
@@ -3901,13 +3909,16 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
 
 export default function AgentWorkspace() {
   const { missions, patchLocal, walletConnected } = useMissions();
+  const { publicKey } = useWallet();
+  const walletPk = publicKey?.toBase58() ?? null;
   const hasMission = missions.length > 0;
 
-  // Reactive: re-read whenever MissionSwitcher changes the active mission
-  const [pinnedId, setPinnedId] = useState(() => localStorage.getItem("hm-active-mission-id"));
+  // Reactive: re-read whenever MissionSwitcher changes the active mission for THIS
+  // wallet. Wallet-scoped key ensures switching wallets resets the pinned mission.
+  const [pinnedId, setPinnedId] = useState<string | null>(() => getActiveMissionId(walletPk));
   useEffect(() => {
-    const sync = () => setPinnedId(localStorage.getItem("hm-active-mission-id"));
-    // "storage" fires from other tabs; "hm-active-mission-changed" fires from MissionSwitcher in same tab
+    setPinnedId(getActiveMissionId(walletPk));
+    const sync = () => setPinnedId(getActiveMissionId(walletPk));
     window.addEventListener("storage", sync);
     window.addEventListener("hm-active-mission-changed", sync);
     window.addEventListener("hm-missions-updated", sync);
@@ -3916,7 +3927,7 @@ export default function AgentWorkspace() {
       window.removeEventListener("hm-active-mission-changed", sync);
       window.removeEventListener("hm-missions-updated", sync);
     };
-  }, []);
+  }, [walletPk]);
 
   // The expired-preview page on the backend links here with `?mission=<id>&autoHost=1` so the
   // user can rebuild a dead preview in one click. Pin the mission from the URL before computing
@@ -3925,10 +3936,9 @@ export default function AgentWorkspace() {
     const params = new URLSearchParams(window.location.search);
     const m = params.get("mission");
     if (m && missions.some((row) => row.id === m)) {
-      localStorage.setItem("hm-active-mission-id", m);
-      window.dispatchEvent(new Event("hm-active-mission-changed"));
+      setActiveMissionIdForWallet(walletPk, m);
     }
-  }, [missions]);
+  }, [missions, walletPk]);
 
   const activeMission =
     (pinnedId ? missions.find((m) => m.id === pinnedId) : null) ??

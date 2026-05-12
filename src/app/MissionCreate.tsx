@@ -18,7 +18,12 @@ import { TrialBanner } from "./components/TrialBanner";
 import { getAuthToken, getSessionWallet, waitForSession } from "../lib/auth-token";
 import { useWalletBackendAuth } from "./hooks/useWalletBackendAuth";
 import { useMissionPayment } from "./hooks/useMissionPayment";
-import { useMissions, type MissionBudgetAllocation, type MissionConfig } from "./store";
+import {
+  useMissions,
+  setActiveMissionIdForWallet,
+  type MissionBudgetAllocation,
+  type MissionConfig,
+} from "./store";
 
 /** Rotated through the textarea placeholder so the suggestions are discoverable without
  *  stealing vertical space. One swap every ~3 seconds, looped forever. */
@@ -416,7 +421,7 @@ export default function MissionCreate() {
           agentModels: { ...agentModels },
         },
       });
-      localStorage.setItem("hm-active-mission-id", newMission.id);
+      setActiveMissionIdForWallet(walletPk, newMission.id);
       navigate("/agents");
     } finally {
       setLaunching(false);
