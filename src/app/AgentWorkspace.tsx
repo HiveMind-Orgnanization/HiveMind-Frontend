@@ -1840,12 +1840,22 @@ function AgentWorkspaceMissionBody({
   // hit this:
   //   1. A mission whose chat was never PUT to the backend (sign-in lag, network hiccup)
   //   2. A mission whose local snapshot got wiped by an earlier per-wallet cleanup
-  // Without this, the user opens a completed mission with 37 saved files and sees a
+  // Without this, the user opens a completed mission with N saved files and sees a
   // blank chat panel — a real "did anything happen?" moment. The synthesized bubbles
   // are honest about what they are (one per role, listing the saved paths) so the user
   // can still follow the mission's history even when the conversational record is gone.
+  //
+  // Earlier version of this guarded on `workspaceMergeDone`, which never flipped reliably
+  // in some race orderings (the merge effect declared LATER than the synthesis effect,
+  // so on the first render synthesis ran with workspaceMergeDone=false and returned;
+  // the dep change from false→true sometimes coincided with artifacts still being [],
+  // and the subsequent artifact load didn't re-fire synthesis because messages had been
+  // overwritten by an empty merge result mid-flight). Track per-mission "did we run yet"
+  // via a ref instead — fire once, deterministically, when artifacts arrive and chat is
+  // still empty. If real chat lands later via WebSocket, our synthesized bubbles co-exist.
+  const synthesizedForMissionRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!workspaceMergeDone) return;
+    if (synthesizedForMissionRef.current === mission.id) return;
     if (messages.length > 0) return;
     if (artifacts.length === 0) return;
     const byRole = new Map<string, { agent: string; role: string; paths: string[]; ts: number }>();
@@ -1885,8 +1895,9 @@ function AgentWorkspaceMissionBody({
           state: "approved" as const,
         };
       });
+    synthesizedForMissionRef.current = mission.id;
     setMessages(synthesized);
-  }, [workspaceMergeDone, messages.length, artifacts]);
+  }, [mission.id, messages.length, artifacts]);
 
   /** True whenever the swarm or any in-flight agent invoke is producing code — drives the preview "Building…" overlay. */
   const swarmRunning = useMemo(
