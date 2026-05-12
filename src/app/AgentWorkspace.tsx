@@ -4052,14 +4052,13 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                         title={researchMode ? "Research mode ON — click to disable" : "Enable research mode for the next message"}
                         aria-label="Toggle research mode"
                         aria-pressed={researchMode}
-                        className={`inline-flex items-center gap-1 rounded-md border px-2 py-1.5 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                        className={`rounded-md border p-1.5 transition disabled:cursor-not-allowed disabled:opacity-40 ${
                           researchMode
                             ? "border-cyan-300/45 bg-cyan-300/15 text-cyan-100"
                             : "border-white/10 bg-white/[0.03] text-white/65 hover:border-cyan-300/30 hover:text-cyan-200"
                         }`}
                       >
                         <Globe className="h-3.5 w-3.5" />
-                        <span className="hidden sm:inline">Research</span>
                       </button>
 
                       {/* Voice input — Web Speech API; hidden when the browser
@@ -4102,14 +4101,14 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                               ? "Add a note for the agents… (optional)"
                               : "Ask the swarm a question…"
                           }
-                          className="w-full rounded-lg border border-white/10 bg-black/50 py-2 pl-3 pr-10 text-[13px] text-white/90 placeholder:text-white/25 focus:border-cyan-300/35 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                          className="w-full rounded-lg border border-white/10 bg-black/50 py-3.5 pl-3.5 pr-11 text-[13.5px] text-white/90 placeholder:text-white/25 focus:border-cyan-300/35 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
                         />
                         {autoInvoking ? (
                           <button
                             onClick={stopRun}
                             title="Stop the agent run"
                             aria-label="Stop"
-                            className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md border border-rose-300/40 bg-rose-300/15 p-1.5 text-rose-200 hover:bg-rose-300/25"
+                            className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md border border-rose-300/40 bg-rose-300/15 p-1.5 text-rose-200 hover:bg-rose-300/25"
                           >
                             <Square className="h-3.5 w-3.5 fill-current" />
                           </button>
@@ -4118,7 +4117,7 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                             onClick={sendMessage}
                             disabled={!draft.trim() && attachments.length === 0}
                             title={followUpRequiresPayment ? `Send (requires ${FOLLOWUP_PAID_SOL} SOL)` : undefined}
-                            className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md bg-gradient-to-r from-cyan-400 to-purple-400 p-1.5 text-black disabled:opacity-40"
+                            className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md bg-gradient-to-r from-cyan-400 to-purple-400 p-2 text-black disabled:opacity-40"
                             aria-label="Send"
                           >
                             <Send className="h-3.5 w-3.5" />
