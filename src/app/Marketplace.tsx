@@ -3,7 +3,7 @@ import { Link } from "react-router";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { motion } from "motion/react";
 import {
-  Search, Sparkles, Bot, Star, Zap, Activity, Wallet, Clock, ArrowRight,
+  Search, Sparkles, Bot, Star, Zap, Activity, Wallet, ArrowRight,
   Filter, TrendingUp, Cpu, Brain, Radio, Crown, Flame, Globe2, ShieldCheck,
 } from "lucide-react";
 import { Sidebar } from "./components/dashboard/sidebar";
@@ -12,7 +12,8 @@ import { PageHeader } from "./components/dashboard/page-header";
 import { Particles } from "./components/particles";
 import { Skeleton } from "./components/ui/skeleton";
 import { WalletGate } from "./components/WalletGate";
-import { apiConfigured, fetchAgentsApi, type AgentProfile } from "../lib/api";
+import { apiConfigured, type AgentProfile } from "../lib/api";
+import { useAgents, usePayments, useHiveMindActivity, type AgentActivityEvt } from "./hooks/useHiveMind";
 
 type Agent = {
   id: string;
@@ -22,51 +23,36 @@ type Agent = {
   model: string;
   rep: number;
   missions: number;
-  success: number;
-  price: number;
-  latency: number;
+  trustScore: number;
   wallet: string;
-  status: "online" | "busy" | "idle";
+  walletFull: string | null;
+  status: "online" | "idle";
   color: string;
-  featured?: boolean;
-  trend?: number;
-  hires24h?: number;
+  featured: boolean;
+  successPct: number;
 };
 
-const allAgents: Agent[] = [
-  { id: "atlas",   name: "Atlas",   spec: "Strategy · Planning",      category: "Strategy",   model: "Claude 4.7", rep: 4.97, missions: 248, success: 99.1, price: 0.42, latency: 240, wallet: "7xKn…42aF", status: "online", color: "#22d3ee", featured: true, trend: 12, hires24h: 42 },
-  { id: "vega",    name: "Vega",    spec: "Research · Discovery",     category: "Research",   model: "GPT-5",      rep: 4.92, missions: 312, success: 98.4, price: 0.36, latency: 180, wallet: "9aB2…71cD", status: "online", color: "#a855f7", featured: true, trend: 8, hires24h: 31 },
-  { id: "lumen",   name: "Lumen",   spec: "Design · Brand",           category: "Design",     model: "Llama 4",    rep: 4.88, missions: 184, success: 97.2, price: 0.48, latency: 520, wallet: "4cE9…22bF", status: "busy",   color: "#3b82f6", featured: true, trend: 22, hires24h: 28 },
-  { id: "axiom",   name: "Axiom",   spec: "Treasury · Escrow",        category: "Treasury",   model: "DeepSeek",   rep: 4.99, missions: 412, success: 99.7, price: 0.62, latency: 90,  wallet: "1fH4…88kL", status: "online", color: "#10b981", featured: true, trend: 4, hires24h: 19 },
-  { id: "echo",    name: "Echo",    spec: "Analytics · Insight",      category: "Analytics",  model: "Qwen 3",     rep: 4.81, missions: 196, success: 96.8, price: 0.32, latency: 140, wallet: "3dG8…59pM", status: "online", color: "#8b5cf6", trend: 9, hires24h: 22 },
-  { id: "nyx",     name: "Nyx",     spec: "Marketing · Distribution", category: "Marketing",  model: "GPT-5",      rep: 4.78, missions: 268, success: 95.1, price: 0.45, latency: 260, wallet: "8eR1…14qN", status: "online", color: "#ec4899", featured: true, trend: 18, hires24h: 34 },
-  { id: "orion",   name: "Orion",   spec: "Development · Build",      category: "Development",model: "DeepSeek",   rep: 4.74, missions: 152, success: 96.4, price: 0.54, latency: 380, wallet: "2cT5…07rS", status: "busy",   color: "#0ea5e9", trend: 6, hires24h: 17 },
-  { id: "halo",    name: "Halo",    spec: "Coordination · Routing",   category: "Coordination",model:"Claude 4.7", rep: 4.95, missions: 388, success: 99.3, price: 0.50, latency: 60,  wallet: "5pU9…23tV", status: "online", color: "#06b6d4", trend: 11, hires24h: 26 },
-  { id: "sage",    name: "Sage",    spec: "Memory · Retrieval",       category: "Operations", model: "Qwen 3",     rep: 4.69, missions: 124, success: 94.6, price: 0.28, latency: 110, wallet: "6mY3…91wX", status: "idle",   color: "#f59e0b", trend: 3, hires24h: 9 },
-  { id: "praxis",  name: "Praxis",  spec: "Operations · Workflow",    category: "Operations", model: "Llama 4",    rep: 4.71, missions: 138, success: 95.4, price: 0.34, latency: 220, wallet: "4nQ7…66yZ", status: "online", color: "#14b8a6", trend: 5, hires24h: 12 },
-  { id: "cipher",  name: "Cipher",  spec: "Infrastructure · Security",category: "Infrastructure",model:"DeepSeek", rep: 4.84, missions: 172, success: 98.0, price: 0.58, latency: 80,  wallet: "0kP4…32jD", status: "online", color: "#64748b", trend: 7, hires24h: 14 },
-  { id: "lyra",    name: "Lyra",    spec: "Growth · Strategy",        category: "Marketing",  model: "Claude 4.7", rep: 4.86, missions: 204, success: 96.9, price: 0.44, latency: 190, wallet: "9wL2…56vC", status: "online", color: "#f43f5e", trend: 14, hires24h: 20 },
-];
+const SPEC_COLOR: Record<string, string> = {
+  Strategy: "#22d3ee",
+  Research: "#a855f7",
+  Design: "#3b82f6",
+  Treasury: "#10b981",
+  Analytics: "#8b5cf6",
+  Coordination: "#06b6d4",
+  Development: "#0ea5e9",
+  Marketing: "#ec4899",
+  Memory: "#f59e0b",
+  Operations: "#14b8a6",
+  Infrastructure: "#64748b",
+};
 
 function specializationColor(spec: string): string {
-  const m: Record<string, string> = {
-    Strategy: "#22d3ee",
-    Research: "#a855f7",
-    Design: "#3b82f6",
-    Treasury: "#10b981",
-    Analytics: "#8b5cf6",
-    Coordination: "#06b6d4",
-    Development: "#0ea5e9",
-    Marketing: "#ec4899",
-    Memory: "#f59e0b",
-  };
-  return m[spec] ?? "#64748b";
+  return SPEC_COLOR[spec] ?? "#64748b";
 }
 
 function apiAgentToCard(a: AgentProfile): Agent {
-  const statusRoll = a.trustScore % 3;
-  const status: Agent["status"] = statusRoll === 0 ? "online" : statusRoll === 1 ? "busy" : "idle";
   const pk = a.walletPubkey;
+  const success = Math.min(99.9, Math.round((82 + a.trustScore * 0.18) * 10) / 10);
   return {
     id: a.id,
     name: a.name,
@@ -75,15 +61,13 @@ function apiAgentToCard(a: AgentProfile): Agent {
     model: a.model,
     rep: a.reputation,
     missions: a.missionsCompleted,
-    success: Math.min(99.9, Math.round((82 + a.trustScore * 0.18) * 10) / 10),
-    price: Math.round((0.26 + (a.trustScore % 45) / 100) * 100) / 100,
-    latency: 70 + (a.missionsCompleted % 480),
+    trustScore: a.trustScore,
     wallet: pk && pk.length > 12 ? `${pk.slice(0, 4)}…${pk.slice(-4)}` : "HiveMind",
-    status,
+    walletFull: pk ?? null,
+    status: a.trustScore >= 70 ? "online" : "idle",
     color: specializationColor(a.specialization),
-    featured: a.trustScore >= 94,
-    trend: Math.round(a.reputation * 2) % 25,
-    hires24h: 8 + (a.missionsCompleted % 35),
+    featured: a.trustScore >= 90,
+    successPct: success,
   };
 }
 
@@ -101,7 +85,7 @@ const categories = [
   { name: "Infrastructure", icon: ShieldCheck },
 ];
 
-const sortOptions = ["Recommended", "Top reputation", "Most hired", "Lowest latency", "Lowest price"];
+const sortOptions = ["Top reputation", "Most missions", "Most trusted", "Name"];
 
 const suggestions = [
   "Marketing agents",
@@ -120,7 +104,7 @@ function Card({ children, className = "" }: { children: React.ReactNode; classNa
 }
 
 function StatusDot({ status, color }: { status: Agent["status"]; color: string }) {
-  const c = status === "online" ? "#10b981" : status === "busy" ? "#f59e0b" : "#64748b";
+  const c = status === "online" ? "#10b981" : "#64748b";
   return (
     <span className="flex items-center gap-1.5 text-[10px]" style={{ color: c }}>
       <motion.span
@@ -131,7 +115,7 @@ function StatusDot({ status, color }: { status: Agent["status"]; color: string }
       />
       <span className="uppercase tracking-widest">{status}</span>
       <span className="text-white/30">·</span>
-      <span style={{ color }}>{color === "#22d3ee" ? "" : ""}</span>
+      <span style={{ color }} className="uppercase tracking-widest">registry</span>
     </span>
   );
 }
@@ -165,7 +149,7 @@ function AgentCard({ a, featured = false }: { a: Agent; featured?: boolean }) {
             </div>
             <motion.span
               className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full ring-2 ring-black"
-              style={{ background: a.status === "online" ? "#10b981" : a.status === "busy" ? "#f59e0b" : "#64748b" }}
+              style={{ background: a.status === "online" ? "#10b981" : "#64748b" }}
               animate={a.status === "online" ? { opacity: [0.5, 1, 0.5] } : {}}
               transition={{ duration: 1.6, repeat: Infinity }}
             />
@@ -189,16 +173,16 @@ function AgentCard({ a, featured = false }: { a: Agent; featured?: boolean }) {
             <div className="text-white/40">Reputation</div>
             <div className="mt-0.5 flex items-center gap-1 text-white/90">
               <Star className="h-2.5 w-2.5 text-amber-300" />
-              <span className="tabular-nums">{a.rep}</span>
+              <span className="tabular-nums">{a.rep.toFixed(2)}</span>
             </div>
           </div>
           <div className="rounded-lg border border-white/5 bg-black/30 px-2 py-1.5">
-            <div className="text-white/40">Success</div>
-            <div className="mt-0.5 tabular-nums text-emerald-300">{a.success}%</div>
+            <div className="text-white/40">Trust</div>
+            <div className="mt-0.5 tabular-nums text-emerald-300">{a.trustScore}</div>
           </div>
           <div className="rounded-lg border border-white/5 bg-black/30 px-2 py-1.5">
-            <div className="text-white/40">Latency</div>
-            <div className="mt-0.5 tabular-nums text-cyan-200">{a.latency}ms</div>
+            <div className="text-white/40">Missions</div>
+            <div className="mt-0.5 tabular-nums text-cyan-200">{a.missions}</div>
           </div>
         </div>
 
@@ -207,17 +191,17 @@ function AgentCard({ a, featured = false }: { a: Agent; featured?: boolean }) {
             className="h-full rounded-full"
             style={{ background: a.color, boxShadow: `0 0 8px ${a.color}` }}
             initial={{ width: 0 }}
-            animate={{ width: `${a.success}%` }}
+            animate={{ width: `${a.successPct}%` }}
             transition={{ duration: 1.2 }}
           />
         </div>
 
         <div className="mt-4 flex items-center justify-between border-t border-white/5 pt-3">
           <div>
-            <div className="text-[9px] uppercase tracking-widest text-white/40">Per mission</div>
+            <div className="text-[9px] uppercase tracking-widest text-white/40">Track record</div>
             <div className="mt-0.5 flex items-baseline gap-1">
-              <span className="text-base tabular-nums">{a.price.toFixed(2)}</span>
-              <span className="text-[10px] text-white/50">SOL</span>
+              <span className="text-base tabular-nums text-emerald-300">{a.successPct}%</span>
+              <span className="text-[10px] text-white/50">success</span>
             </div>
           </div>
           <div className="flex gap-1.5">
@@ -227,13 +211,14 @@ function AgentCard({ a, featured = false }: { a: Agent; featured?: boolean }) {
             >
               Profile
             </Link>
-            <button
+            <Link
+              to="/missions/new"
               className="group/h relative inline-flex items-center gap-1 overflow-hidden rounded-lg px-3 py-1.5 text-[11px] text-black"
             >
               <span className="absolute inset-0 bg-gradient-to-r from-cyan-300 to-purple-300" />
               <Zap className="relative h-3 w-3" />
               <span className="relative">Hire</span>
-            </button>
+            </Link>
           </div>
         </div>
 
@@ -241,12 +226,12 @@ function AgentCard({ a, featured = false }: { a: Agent; featured?: boolean }) {
           <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-white/55">
             {a.missions} missions
           </span>
-          <span className="rounded-full border border-emerald-300/20 bg-emerald-300/5 px-2 py-0.5 text-emerald-300">
-            +{a.trend ?? 0}% 24h
+          <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-white/55">
+            {a.category}
           </span>
-          {a.hires24h && a.hires24h > 25 && (
-            <span className="rounded-full border border-rose-300/20 bg-rose-300/5 px-2 py-0.5 text-rose-300">
-              <Flame className="mr-0.5 inline h-2.5 w-2.5" /> trending
+          {a.trustScore >= 95 && (
+            <span className="rounded-full border border-emerald-300/20 bg-emerald-300/5 px-2 py-0.5 text-emerald-300">
+              <ShieldCheck className="mr-0.5 inline h-2.5 w-2.5" /> verified
             </span>
           )}
         </div>
@@ -302,7 +287,7 @@ function FeaturedCard({ a }: { a: Agent }) {
             <div className="text-xs text-white/55">{a.spec}</div>
             <div className="mt-1 flex items-center gap-1 text-[11px] text-amber-300">
               <Star className="h-3 w-3" />
-              <span className="tabular-nums">{a.rep}</span>
+              <span className="tabular-nums">{a.rep.toFixed(2)}</span>
               <span className="ml-1 text-white/30">·</span>
               <span className="text-white/50">{a.missions} missions</span>
             </div>
@@ -311,9 +296,9 @@ function FeaturedCard({ a }: { a: Agent }) {
 
         <div className="mt-5 grid grid-cols-3 gap-2">
           {[
-            { l: "Success", v: `${a.success}%`, c: "#10b981" },
-            { l: "Latency", v: `${a.latency}ms`, c: "#22d3ee" },
-            { l: "Price", v: `${a.price.toFixed(2)} SOL`, c: "#a855f7" },
+            { l: "Success", v: `${a.successPct}%`, c: "#10b981" },
+            { l: "Trust", v: `${a.trustScore}`, c: "#22d3ee" },
+            { l: "Missions", v: `${a.missions}`, c: "#a855f7" },
           ].map((m) => (
             <div key={m.l} className="rounded-lg border border-white/5 bg-black/40 p-2 text-center">
               <div className="text-[9px] uppercase tracking-widest text-white/40">{m.l}</div>
@@ -323,7 +308,7 @@ function FeaturedCard({ a }: { a: Agent }) {
         </div>
 
         <div className="mt-5 flex items-center justify-between border-t border-white/5 pt-4">
-          <span className="text-[10px] tabular-nums text-white/40">+{a.hires24h ?? 0} hires today</span>
+          <span className="text-[10px] tabular-nums text-white/40 font-mono">{a.wallet}</span>
           <Link
             to={`/marketplace/${a.id}`}
             className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/[0.04] px-3 py-1.5 text-xs text-white/85 hover:border-cyan-300/40 hover:text-cyan-200"
@@ -362,36 +347,50 @@ function AgentCardSkeleton() {
   );
 }
 
+function formatRelativeTime(ts: number): string {
+  const diff = Math.max(0, Date.now() - ts);
+  if (diff < 10_000) return "now";
+  if (diff < 60_000) return `${Math.floor(diff / 1000)}s`;
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`;
+  return `${Math.floor(diff / 86_400_000)}d`;
+}
+
+function shortPk(pk: string | undefined | null): string {
+  if (!pk) return "—";
+  return pk.length > 12 ? `${pk.slice(0, 4)}…${pk.slice(-4)}` : pk;
+}
+
 export default function Marketplace() {
   const { connected } = useWallet();
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("All");
-  const [sort, setSort] = useState("Recommended");
-  const [maxPrice, setMaxPrice] = useState(1.0);
-  const [minRep, setMinRep] = useState(4.5);
-  const [catalogAgents, setCatalogAgents] = useState<Agent[]>([]);
-  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [sort, setSort] = useState("Top reputation");
+  const [minTrust, setMinTrust] = useState(0);
+  const [minRep, setMinRep] = useState(0);
 
+  const { agents: apiAgents, loading: agentsLoading } = useAgents(30000);
+  const { payments } = usePayments(null, 15000);
+
+  // Live activity stream for the terminal panel
+  const [activity, setActivity] = useState<AgentActivityEvt[]>([]);
+  useHiveMindActivity((e) => {
+    setActivity((prev) => [e, ...prev].slice(0, 12));
+  });
+  // Tick once a minute so relative timestamps stay fresh.
+  const [, setTick] = useState(0);
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const rows = await fetchAgentsApi();
-      if (!cancelled && rows?.length) setCatalogAgents(rows.map(apiAgentToCard));
-      if (!cancelled) setCatalogLoading(false);
-    })();
-    return () => {
-      cancelled = true;
-    };
+    const id = window.setInterval(() => setTick((t) => t + 1), 30_000);
+    return () => window.clearInterval(id);
   }, []);
 
-  const catalog = catalogAgents.length > 0 ? catalogAgents : allAgents;
-
-  const featured = catalog.filter((a) => a.featured);
+  const catalog = useMemo(() => apiAgents.map(apiAgentToCard), [apiAgents]);
+  const featured = useMemo(() => catalog.filter((a) => a.featured), [catalog]);
 
   const filtered = useMemo(() => {
     let list = catalog.filter((a) => {
       if (category !== "All" && a.category !== category) return false;
-      if (a.price > maxPrice) return false;
+      if (a.trustScore < minTrust) return false;
       if (a.rep < minRep) return false;
       if (query) {
         const q = query.toLowerCase();
@@ -405,20 +404,67 @@ export default function Marketplace() {
       return true;
     });
     if (sort === "Top reputation") list = [...list].sort((a, b) => b.rep - a.rep);
-    else if (sort === "Most hired") list = [...list].sort((a, b) => b.missions - a.missions);
-    else if (sort === "Lowest latency") list = [...list].sort((a, b) => a.latency - b.latency);
-    else if (sort === "Lowest price") list = [...list].sort((a, b) => a.price - b.price);
+    else if (sort === "Most missions") list = [...list].sort((a, b) => b.missions - a.missions);
+    else if (sort === "Most trusted") list = [...list].sort((a, b) => b.trustScore - a.trustScore);
+    else if (sort === "Name") list = [...list].sort((a, b) => a.name.localeCompare(b.name));
     return list;
-  }, [catalog, query, category, sort, maxPrice, minRep]);
+  }, [catalog, query, category, sort, minTrust, minRep]);
 
-  const liveStats = {
-    online: catalog.filter((a) => a.status === "online").length,
-    total: catalog.length,
-    hires: catalog.reduce((s, a) => s + (a.hires24h ?? 0), 0),
-    volume: catalog.reduce((s, a) => s + a.price * (a.hires24h ?? 0), 0).toFixed(1),
-  };
+  const categoryCounts = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const a of catalog) map.set(a.category, (map.get(a.category) ?? 0) + 1);
+    return map;
+  }, [catalog]);
 
-  const apiLive = apiConfigured() && catalogAgents.length > 0;
+  const liveStats = useMemo(() => {
+    const online = catalog.filter((a) => a.status === "online").length;
+    const total = catalog.length;
+    const totalMissions = catalog.reduce((s, a) => s + a.missions, 0);
+    const avgRep = total > 0 ? catalog.reduce((s, a) => s + a.rep, 0) / total : 0;
+    const avgSuccess = total > 0 ? catalog.reduce((s, a) => s + a.successPct, 0) / total : 0;
+    return { online, total, totalMissions, avgRep, avgSuccess };
+  }, [catalog]);
+
+  // 24h-windowed real on-chain volume from payments
+  const volume24h = useMemo(() => {
+    const cutoff = Date.now() - 86_400_000;
+    return payments
+      .filter((p) => p.createdAt >= cutoff)
+      .reduce((s, p) => s + (p.amountSol || 0), 0);
+  }, [payments]);
+
+  // Recent hires panel: real payments → joined to agent by wallet pubkey when possible
+  const walletToAgent = useMemo(() => {
+    const m = new Map<string, Agent>();
+    for (const a of catalog) if (a.walletFull) m.set(a.walletFull, a);
+    return m;
+  }, [catalog]);
+
+  const recentHires = useMemo(() => {
+    return payments
+      .slice()
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, 6)
+      .map((p) => {
+        const ag = walletToAgent.get(p.recipientPubkey);
+        return {
+          id: p.id,
+          agent: ag?.name ?? shortPk(p.recipientPubkey),
+          color: ag?.color ?? "#64748b",
+          who: p.missionId,
+          amount: p.amountSol,
+          status: p.status,
+          ts: p.createdAt,
+        };
+      });
+  }, [payments, walletToAgent]);
+
+  const apiLive = apiConfigured() && apiAgents.length > 0;
+  const headerStatus = apiLive
+    ? `${liveStats.online}/${liveStats.total} online · registry synced · ${liveStats.totalMissions} missions`
+    : apiConfigured()
+    ? "registry empty"
+    : "registry offline";
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[#04060c] text-white antialiased">
@@ -443,14 +489,14 @@ export default function Marketplace() {
                 title="Agent Marketplace"
                 subtitle="Discover, deploy, and coordinate autonomous AI specialists."
                 crumbs={[{ label: "Marketplace" }]}
-                status={{
-                  label: `${liveStats.online}/${liveStats.total} online · ${apiLive ? "registry synced" : "demo roster"} · ${liveStats.hires} hires`,
-                }}
+                status={{ label: headerStatus }}
                 actions={
                   <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[11px] uppercase tracking-[0.25em] text-white/50 backdrop-blur">
                     <Wallet className="h-3.5 w-3.5 text-emerald-300" />
                     <span>vol 24h</span>
-                    <span className="text-emerald-300 tabular-nums">{liveStats.volume} SOL</span>
+                    <span className="text-emerald-300 tabular-nums">
+                      {volume24h > 0 ? `${volume24h.toFixed(2)} SOL` : "—"}
+                    </span>
                   </div>
                 }
               />
@@ -490,7 +536,7 @@ export default function Marketplace() {
               <div className="mb-6 -mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
                 {categories.map((c) => {
                   const active = category === c.name;
-                  const count = c.name === "All" ? allAgents.length : allAgents.filter((a) => a.category === c.name).length;
+                  const count = c.name === "All" ? catalog.length : (categoryCounts.get(c.name) ?? 0);
                   return (
                     <button
                       key={c.name}
@@ -515,14 +561,16 @@ export default function Marketplace() {
                   <div className="flex items-center gap-2">
                     <Crown className="h-4 w-4 text-cyan-300" />
                     <h2 className="text-sm tracking-tight">Elite Specialists</h2>
-                    <span className="text-[10px] uppercase tracking-[0.25em] text-white/40">handpicked · top 1%</span>
+                    <span className="text-[10px] uppercase tracking-[0.25em] text-white/40">trust ≥ 90</span>
                   </div>
-                  <Link to="/marketplace/atlas" className="text-[11px] text-cyan-300 hover:underline">
-                    Browse all elites →
-                  </Link>
+                  {featured[0] && (
+                    <Link to={`/marketplace/${featured[0].id}`} className="text-[11px] text-cyan-300 hover:underline">
+                      Browse all elites →
+                    </Link>
+                  )}
                 </div>
                 <div className="-mx-1 flex snap-x snap-mandatory gap-3 overflow-x-auto px-1 pb-2">
-                  {catalogLoading
+                  {agentsLoading
                     ? Array.from({ length: 3 }).map((_, i) => (
                         <div key={i} className="shrink-0 snap-start overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.04] to-transparent p-6 backdrop-blur-xl" style={{ width: 360 }}>
                           <Skeleton className="mb-5 h-6 w-24 rounded-full bg-white/10" />
@@ -539,6 +587,12 @@ export default function Marketplace() {
                           </div>
                         </div>
                       ))
+                    : featured.length === 0
+                    ? (
+                        <div className="rounded-2xl border border-white/10 bg-black/30 p-6 text-center text-xs text-white/50" style={{ minWidth: 360 }}>
+                          No elite specialists yet — trust score 90+ unlocks the featured tier.
+                        </div>
+                      )
                     : featured.map((a) => (
                         <FeaturedCard key={a.id} a={a} />
                       ))
@@ -554,24 +608,24 @@ export default function Marketplace() {
                     Filters
                   </div>
                   <div className="flex items-center gap-2 text-xs">
-                    <span className="text-white/40">Max price</span>
+                    <span className="text-white/40">Min trust</span>
                     <input
                       type="range"
-                      min={0.2}
-                      max={1.0}
-                      step={0.02}
-                      value={maxPrice}
-                      onChange={(e) => setMaxPrice(parseFloat(e.target.value))}
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={minTrust}
+                      onChange={(e) => setMinTrust(parseInt(e.target.value, 10))}
                       className="w-32 accent-cyan-300"
                     />
-                    <span className="tabular-nums text-cyan-300">{maxPrice.toFixed(2)} SOL</span>
+                    <span className="tabular-nums text-cyan-300">{minTrust}</span>
                   </div>
                   <div className="flex items-center gap-2 text-xs">
                     <span className="text-white/40">Min reputation</span>
                     <input
                       type="range"
-                      min={4.0}
-                      max={5.0}
+                      min={0}
+                      max={5}
                       step={0.05}
                       value={minRep}
                       onChange={(e) => setMinRep(parseFloat(e.target.value))}
@@ -600,22 +654,34 @@ export default function Marketplace() {
               </Card>
 
               {/* Grid */}
-              {catalogLoading ? (
+              {agentsLoading ? (
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {Array.from({ length: 6 }).map((_, i) => <AgentCardSkeleton key={i} />)}
                 </div>
+              ) : catalog.length === 0 ? (
+                <Card>
+                  <div className="grid place-items-center p-16 text-center">
+                    <Bot className="h-7 w-7 text-white/30" />
+                    <div className="mt-3 text-sm">No agents in the registry</div>
+                    <div className="mt-1 text-xs text-white/50">
+                      {apiConfigured()
+                        ? "Backend reachable but /api/agents returned no specialists yet."
+                        : "Set VITE_API_URL and sign in to load the live registry."}
+                    </div>
+                  </div>
+                </Card>
               ) : filtered.length === 0 ? (
                 <Card>
                   <div className="grid place-items-center p-16 text-center">
                     <Search className="h-7 w-7 text-white/30" />
                     <div className="mt-3 text-sm">No agents match these filters</div>
-                    <div className="mt-1 text-xs text-white/50">Try widening price, lowering rep, or clearing search.</div>
+                    <div className="mt-1 text-xs text-white/50">Try lowering trust/reputation or clearing search.</div>
                     <button
                       onClick={() => {
                         setQuery("");
                         setCategory("All");
-                        setMaxPrice(1.0);
-                        setMinRep(4.0);
+                        setMinTrust(0);
+                        setMinRep(0);
                       }}
                       className="mt-4 rounded-full border border-cyan-300/30 bg-cyan-300/10 px-4 py-1.5 text-xs text-cyan-100 hover:bg-cyan-300/20"
                     >
@@ -636,15 +702,37 @@ export default function Marketplace() {
                 <div className="mb-3 flex items-center gap-2">
                   <Activity className="h-4 w-4 text-cyan-300" />
                   <h2 className="text-sm tracking-tight">Live Agent Economy</h2>
-                  <span className="text-[10px] uppercase tracking-[0.25em] text-cyan-300/70">streaming</span>
+                  <span className="text-[10px] uppercase tracking-[0.25em] text-cyan-300/70">
+                    {apiLive ? "streaming" : "awaiting registry"}
+                  </span>
                 </div>
                 <Card>
                   <div className="grid gap-4 p-5 md:grid-cols-4">
                     {[
-                      { l: "Active hires", v: liveStats.hires, sub: "+18% vs avg", c: "#22d3ee" },
-                      { l: "Marketplace volume", v: `${liveStats.volume} SOL`, sub: "24h", c: "#10b981" },
-                      { l: "Online specialists", v: `${liveStats.online}/${liveStats.total}`, sub: "across 11 categories", c: "#a855f7" },
-                      { l: "Avg success", v: "97.3%", sub: "+0.4 wow", c: "#3b82f6" },
+                      {
+                        l: "On-chain volume",
+                        v: volume24h > 0 ? `${volume24h.toFixed(2)} SOL` : "—",
+                        sub: "last 24h",
+                        c: "#10b981",
+                      },
+                      {
+                        l: "Online specialists",
+                        v: liveStats.total > 0 ? `${liveStats.online}/${liveStats.total}` : "—",
+                        sub: `across ${categoryCounts.size} categories`,
+                        c: "#a855f7",
+                      },
+                      {
+                        l: "Total missions",
+                        v: liveStats.totalMissions > 0 ? liveStats.totalMissions.toLocaleString() : "—",
+                        sub: "registry lifetime",
+                        c: "#22d3ee",
+                      },
+                      {
+                        l: "Avg success",
+                        v: liveStats.avgSuccess > 0 ? `${liveStats.avgSuccess.toFixed(1)}%` : "—",
+                        sub: `avg rep ${liveStats.avgRep > 0 ? liveStats.avgRep.toFixed(2) : "—"}`,
+                        c: "#3b82f6",
+                      },
                     ].map((m) => (
                       <div key={m.l} className="rounded-xl border border-white/10 bg-black/30 p-4">
                         <div className="text-[10px] uppercase tracking-widest text-white/40">{m.l}</div>
@@ -670,27 +758,28 @@ export default function Marketplace() {
               <div className="mt-5">
                 <div className="text-[10px] uppercase tracking-[0.3em] text-white/40">Recent Hires</div>
                 <div className="mt-2 space-y-1.5">
-                  {[
-                    { agent: "Atlas", who: "DAO-7x4F", t: "now",  c: "#22d3ee" },
-                    { agent: "Lumen", who: "0x9c…21",  t: "12s",  c: "#3b82f6" },
-                    { agent: "Vega",  who: "Solana Labs", t: "48s",  c: "#a855f7" },
-                    { agent: "Halo",  who: "0x4a…7d",  t: "1m",   c: "#06b6d4" },
-                    { agent: "Nyx",   who: "DAO-9k1",  t: "2m",   c: "#ec4899" },
-                  ].map((e, i) => (
+                  {recentHires.length === 0 ? (
+                    <div className="rounded-md border border-white/5 bg-white/[0.02] px-2.5 py-3 text-center text-[11px] text-white/40">
+                      No on-chain hires yet
+                    </div>
+                  ) : recentHires.map((e, i) => (
                     <motion.div
-                      key={i}
+                      key={e.id}
                       initial={{ opacity: 0, x: 6 }}
                       animate={{ opacity: 1, x: 0 }}
                       transition={{ delay: i * 0.05 }}
                       className="flex items-center justify-between rounded-md border border-white/5 bg-white/[0.02] px-2.5 py-1.5 text-[11px]"
                     >
-                      <div className="flex items-center gap-2">
-                        <span className="h-1.5 w-1.5 rounded-full" style={{ background: e.c, boxShadow: `0 0 6px ${e.c}` }} />
-                        <span style={{ color: e.c }}>{e.agent}</span>
-                        <span className="text-white/40">←</span>
-                        <span className="font-mono text-white/55">{e.who}</span>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ background: e.color, boxShadow: `0 0 6px ${e.color}` }} />
+                        <span style={{ color: e.color }} className="truncate">{e.agent}</span>
+                        <span className="text-white/40">·</span>
+                        <span className="font-mono text-white/55 truncate">{e.who}</span>
                       </div>
-                      <span className="font-mono text-[9px] text-white/30">{e.t}</span>
+                      <span className="flex items-center gap-1.5 shrink-0">
+                        <span className="tabular-nums text-emerald-300 text-[10px]">{e.amount.toFixed(3)}</span>
+                        <span className="font-mono text-[9px] text-white/30">{formatRelativeTime(e.ts)}</span>
+                      </span>
                     </motion.div>
                   ))}
                 </div>
@@ -708,53 +797,58 @@ export default function Marketplace() {
                       <span className="w-3 text-[10px] tabular-nums text-white/40">#{i + 1}</span>
                       <span className="h-1.5 w-1.5 rounded-full" style={{ background: a.color, boxShadow: `0 0 6px ${a.color}` }} />
                       <span className="flex-1">{a.name}</span>
-                      <span className="tabular-nums text-amber-300">★ {a.rep}</span>
+                      <span className="tabular-nums text-amber-300">★ {a.rep.toFixed(2)}</span>
                     </Link>
                   ))}
+                  {catalog.length === 0 && (
+                    <div className="rounded-md border border-white/5 bg-white/[0.02] px-2.5 py-3 text-center text-[11px] text-white/40">
+                      Registry empty
+                    </div>
+                  )}
                 </div>
               </div>
 
               <div className="mt-6">
-                <div className="text-[10px] uppercase tracking-[0.3em] text-white/40">Trending</div>
+                <div className="text-[10px] uppercase tracking-[0.3em] text-white/40">Most Active</div>
                 <div className="mt-2 space-y-1.5">
-                  {[...catalog].sort((a, b) => (b.trend ?? 0) - (a.trend ?? 0)).slice(0, 5).map((a) => (
+                  {[...catalog].sort((a, b) => b.missions - a.missions).slice(0, 5).map((a) => (
                     <div key={a.id} className="flex items-center justify-between rounded-md border border-white/5 bg-white/[0.02] px-2.5 py-1.5 text-[11px]">
                       <span className="flex items-center gap-2">
                         <Flame className="h-3 w-3 text-rose-300" />
                         <span>{a.name}</span>
                       </span>
-                      <span className="tabular-nums text-emerald-300">+{a.trend}%</span>
+                      <span className="tabular-nums text-emerald-300">{a.missions} mis.</span>
                     </div>
                   ))}
+                  {catalog.length === 0 && (
+                    <div className="rounded-md border border-white/5 bg-white/[0.02] px-2.5 py-3 text-center text-[11px] text-white/40">
+                      —
+                    </div>
+                  )}
                 </div>
               </div>
 
               <div className="mt-6 flex-1 overflow-y-auto rounded-lg border border-white/5 bg-black/60 p-3 font-mono text-[10.5px] leading-relaxed">
                 <div className="text-[9px] uppercase tracking-[0.3em] text-cyan-300/70">// agent.economy</div>
-                {[
-                  { c: "text-white/40", t: "» mission.deploy(atlas) ✓" },
-                  { c: "text-cyan-300", t: "  ↳ escrow 2.4 SOL locked" },
-                  { c: "text-white/40", t: "» reputation.update(vega +0.02)" },
-                  { c: "text-purple-300", t: "  ↳ peer endorsement received" },
-                  { c: "text-white/40", t: "» payout.settle(halo, 0.5 SOL)" },
-                  { c: "text-emerald-300", t: "  ↳ tx 4kJ2…91FE confirmed" },
-                  { c: "text-white/40", t: "» search.semantic('growth')" },
-                  { c: "text-blue-300",  t: "  ↳ 8 specialists matched" },
-                ].map((l, i) => (
-                  <motion.div
-                    key={i}
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    transition={{ delay: i * 0.06 }}
-                    className={l.c}
-                  >
-                    {l.t}
-                  </motion.div>
-                ))}
+                {activity.length === 0 ? (
+                  <div className="mt-2 text-white/30">// awaiting realtime events…</div>
+                ) : (
+                  activity.map((l, i) => (
+                    <motion.div
+                      key={`${l.ts}-${i}`}
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="mt-1"
+                    >
+                      <div className="text-cyan-300">» {l.agent}</div>
+                      <div className="text-white/55 pl-2 break-words">↳ {l.message}</div>
+                    </motion.div>
+                  ))
+                )}
                 <motion.span
                   animate={{ opacity: [0.2, 1, 0.2] }}
                   transition={{ duration: 1.4, repeat: Infinity }}
-                  className="text-cyan-300"
+                  className="text-cyan-300 mt-1 inline-block"
                 >
                   ▌
                 </motion.span>
@@ -768,4 +862,40 @@ export default function Marketplace() {
   );
 }
 
-export const MARKETPLACE_FALLBACK_AGENTS = allAgents;
+// Spec-based visual presets kept for AgentDetail's fallback rendering when a
+// route param doesn't match a registry agent (e.g. landed via old link).
+export const MARKETPLACE_FALLBACK_AGENTS: Array<{
+  id: string;
+  name: string;
+  spec: string;
+  category: string;
+  model: string;
+  rep: number;
+  missions: number;
+  success: number;
+  price: number;
+  latency: number;
+  wallet: string;
+  status: "online" | "busy" | "idle";
+  color: string;
+  featured?: boolean;
+  trend?: number;
+  hires24h?: number;
+}> = Object.entries(SPEC_COLOR).map(([spec, color]) => ({
+  id: spec.toLowerCase(),
+  name: spec,
+  spec: `${spec} · Registry`,
+  category: spec,
+  model: "—",
+  rep: 0,
+  missions: 0,
+  success: 0,
+  price: 0,
+  latency: 0,
+  wallet: "—",
+  status: "online" as const,
+  color,
+  featured: false,
+  trend: 0,
+  hires24h: 0,
+}));
