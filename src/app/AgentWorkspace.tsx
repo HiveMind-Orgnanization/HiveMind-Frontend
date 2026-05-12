@@ -10,7 +10,15 @@ import {
   LayoutPanelLeft, Code2, ExternalLink, X,
   FolderOpen, Sparkles, Maximize2, Minimize2, type LucideIcon,
   Square, Copy, RotateCcw, Check,
+  Paperclip, FileText, FileType,
 } from "lucide-react";
+import {
+  ingestFile,
+  buildAttachmentContextBlock,
+  formatBytes,
+  ACCEPTED_FILE_TYPES,
+  type ChatAttachment,
+} from "../lib/chat-attachments";
 import { Sidebar } from "./components/dashboard/sidebar";
 import { TopNav } from "./components/dashboard/topnav";
 import { PageHeader } from "./components/dashboard/page-header";
@@ -99,6 +107,16 @@ type ChatMsg = {
   elapsedSecs?: number;
   /** Per-agent thought entries for the collapsible reasoning panel. */
   thoughts?: ChatThought[];
+  /** Operator-uploaded files that travelled with this message (chip preview only —
+   *  the actual content was inlined into the prompt that went to the agent). */
+  attachments?: Array<{
+    id: string;
+    kind: "image" | "text" | "pdf";
+    name: string;
+    path: string;
+    sizeBytes: number;
+    dataUrl?: string;
+  }>;
 };
 
 const seedMessages: ChatMsg[] = [];
@@ -703,6 +721,7 @@ function OutputBubble({ m }: { m: ChatMsg }) {
 
 /** Right-aligned bubble for messages sent by the user/operator. */
 function UserBubble({ m }: { m: ChatMsg }) {
+  const atts = m.attachments ?? [];
   return (
     <div className="flex items-end justify-end gap-2">
       <div className="max-w-[82%]">
@@ -710,9 +729,31 @@ function UserBubble({ m }: { m: ChatMsg }) {
           <span className="font-mono text-[9px] text-white/25">{m.ts}</span>
           <span className="text-[11px] font-semibold text-white/50">You</span>
         </div>
-        <div className="rounded-2xl rounded-br-sm border border-cyan-300/20 bg-gradient-to-br from-cyan-500/20 to-purple-500/15 px-3.5 py-2.5 text-[13px] leading-relaxed text-white/90">
-          {m.text}
-        </div>
+        {atts.length > 0 && (
+          <div className="mb-1.5 flex flex-wrap items-end justify-end gap-1.5">
+            {atts.map((a) => (
+              <div
+                key={a.id}
+                title={`${a.path} · ${formatBytes(a.sizeBytes)}`}
+                className="flex items-center gap-1.5 overflow-hidden rounded-lg border border-white/15 bg-white/[0.04] py-1 pl-1 pr-2 text-[10px] text-white/75"
+              >
+                {a.kind === "image" && a.dataUrl ? (
+                  <img src={a.dataUrl} alt={a.name} className="h-7 w-7 shrink-0 rounded-md object-cover" />
+                ) : (
+                  <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-white/10 bg-black/40">
+                    {a.kind === "pdf" ? <FileType className="h-3.5 w-3.5 text-rose-300" /> : <FileText className="h-3.5 w-3.5 text-cyan-300" />}
+                  </span>
+                )}
+                <span className="max-w-[140px] truncate">{a.name}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {m.text && (
+          <div className="rounded-2xl rounded-br-sm border border-cyan-300/20 bg-gradient-to-br from-cyan-500/20 to-purple-500/15 px-3.5 py-2.5 text-[13px] leading-relaxed text-white/90">
+            {m.text}
+          </div>
+        )}
       </div>
       <div
         className="mb-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[10px] font-bold"
@@ -1815,6 +1856,34 @@ function AgentWorkspaceMissionBody({
   const feedRef = useRef<HTMLDivElement>(null);
   // Prevent double-send (Enter key + button click firing together)
   const isSendingRef = useRef(false);
+
+  // Chat attachments — files the user dragged in or picked via the paperclip.
+  // Cleared after each successful send so they only travel with the immediately-
+  // next message (matches ChatGPT's behaviour).
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  const [attachmentsBusy, setAttachmentsBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const openFilePicker = useCallback(() => fileInputRef.current?.click(), []);
+  const handleFilesPicked = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setAttachmentsBusy(true);
+    try {
+      for (const file of Array.from(files)) {
+        const result = await ingestFile(file);
+        if ("error" in result) {
+          toast.error("Couldn't attach file", { description: result.error });
+          continue;
+        }
+        setAttachments((prev) => [...prev, result]);
+      }
+    } finally {
+      setAttachmentsBusy(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }, []);
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
+  }, []);
 
   // Follow-up paywall — after a mission settles, the original escrow has been spent. Give
   // the user FOLLOWUP_FREE_QUOTA free chat turns for small tweaks, then require a small
@@ -3363,7 +3432,7 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
   const sendMessageRef = useRef<(() => void) | null>(null);
 
   const sendMessage = () => {
-    if (!draft.trim() || isSendingRef.current) return;
+    if ((!draft.trim() && attachments.length === 0) || isSendingRef.current) return;
     // If the mission already settled and the free follow-up quota is exhausted, pop the
     // paywall first — the actual send happens after the on-chain top-up confirms.
     if (followUpRequiresPayment) {
@@ -3381,7 +3450,19 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
     clearCancelled(mission.id);
     isSendingRef.current = true;
     previewAutoFixAttemptsRef.current = 0; // new message → fresh auto-fix budget
-    const text = draft.trim();
+    const userTyped = draft.trim();
+    // The user sees their typed text in the chat bubble; the agent sees the
+    // attachment context block prepended on top. Keeping the operator bubble
+    // clean of attachment dumps means the chat history stays readable.
+    const attachmentBlock = buildAttachmentContextBlock(attachments);
+    const text = attachmentBlock
+      ? `${attachmentBlock}\n\n${userTyped || "(see attached files above)"}`
+      : userTyped;
+    const operatorDisplayText = userTyped || (attachments.length > 0
+      ? `Sent ${attachments.length} attachment${attachments.length === 1 ? "" : "s"}.`
+      : "");
+    const sentAttachments = attachments;
+    setAttachments([]);
     const ts = new Date().toLocaleTimeString("en-US", { hour12: false });
     setDraft("");
 
@@ -3389,7 +3470,14 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
     const opId = Date.now() * 1000 + Math.floor(Math.random() * 999);
     setMessages((m) => [
       ...m,
-      { id: opId, agent: "Operator", color: "#e2e8f0", text, ts },
+      {
+        id: opId, agent: "Operator", color: "#e2e8f0",
+        text: operatorDisplayText,
+        ts,
+        attachments: sentAttachments.length > 0
+          ? sentAttachments.map((a) => ({ id: a.id, kind: a.kind, name: a.name, path: a.path, sizeBytes: a.sizeBytes, dataUrl: a.dataUrl }))
+          : undefined,
+      },
     ]);
 
     if (!apiConfigured()) {
@@ -3847,41 +3935,100 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                         )}
                       </div>
                     )}
+                    {/* Pending attachment chips — show above the input so users
+                        see what's about to ship with their message. */}
+                    {attachments.length > 0 && (
+                      <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                        {attachments.map((a) => (
+                          <div
+                            key={a.id}
+                            title={`${a.path} · ${formatBytes(a.sizeBytes)}`}
+                            className="group flex items-center gap-1.5 overflow-hidden rounded-lg border border-white/15 bg-white/[0.04] py-1 pl-1 pr-1.5 text-[10px] text-white/85"
+                          >
+                            {a.kind === "image" && a.dataUrl ? (
+                              <img src={a.dataUrl} alt={a.name} className="h-6 w-6 shrink-0 rounded-md object-cover" />
+                            ) : (
+                              <span className="grid h-6 w-6 shrink-0 place-items-center rounded-md border border-white/10 bg-black/40">
+                                {a.kind === "pdf" ? <FileType className="h-3 w-3 text-rose-300" /> : <FileText className="h-3 w-3 text-cyan-300" />}
+                              </span>
+                            )}
+                            <span className="max-w-[140px] truncate">{a.name}</span>
+                            <button
+                              type="button"
+                              onClick={() => removeAttachment(a.id)}
+                              title="Remove"
+                              aria-label={`Remove ${a.name}`}
+                              className="rounded p-0.5 text-white/40 hover:bg-white/10 hover:text-white"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
                     <div className="relative flex items-center gap-2">
                       <input
-                        value={draft}
-                        onChange={(e) => setDraft(e.target.value)}
-                        onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && !autoInvoking && sendMessage()}
-                        disabled={autoInvoking}
-                        placeholder={
-                          autoInvoking
-                            ? "Agent is running — click Stop to cancel…"
-                            : followUpRequiresPayment
-                            ? `Top up ${FOLLOWUP_PAID_SOL} SOL to continue chatting…`
-                            : "Ask the swarm a question…"
-                        }
-                        className="w-full rounded-lg border border-white/10 bg-black/50 py-2 pl-3 pr-10 text-[13px] text-white/90 placeholder:text-white/25 focus:border-cyan-300/35 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                        ref={fileInputRef}
+                        type="file"
+                        multiple
+                        accept={ACCEPTED_FILE_TYPES}
+                        onChange={(e) => void handleFilesPicked(e.target.files)}
+                        className="hidden"
+                        aria-hidden
                       />
-                      {autoInvoking ? (
-                        <button
-                          onClick={stopRun}
-                          title="Stop the agent run"
-                          aria-label="Stop"
-                          className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md border border-rose-300/40 bg-rose-300/15 p-1.5 text-rose-200 hover:bg-rose-300/25"
-                        >
-                          <Square className="h-3.5 w-3.5 fill-current" />
-                        </button>
-                      ) : (
-                        <button
-                          onClick={sendMessage}
-                          disabled={!draft.trim()}
-                          title={followUpRequiresPayment ? `Send (requires ${FOLLOWUP_PAID_SOL} SOL)` : undefined}
-                          className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md bg-gradient-to-r from-cyan-400 to-purple-400 p-1.5 text-black disabled:opacity-40"
-                          aria-label="Send"
-                        >
-                          <Send className="h-3.5 w-3.5" />
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={openFilePicker}
+                        disabled={autoInvoking || attachmentsBusy}
+                        title="Attach files (image, PDF, text/code)"
+                        aria-label="Attach files"
+                        className="rounded-md border border-white/10 bg-white/[0.03] p-1.5 text-white/65 transition hover:border-cyan-300/35 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {attachmentsBusy ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Paperclip className="h-3.5 w-3.5" />
+                        )}
+                      </button>
+                      <div className="relative flex-1">
+                        <input
+                          value={draft}
+                          onChange={(e) => setDraft(e.target.value)}
+                          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && !autoInvoking && sendMessage()}
+                          disabled={autoInvoking}
+                          placeholder={
+                            autoInvoking
+                              ? "Agent is running — click Stop to cancel…"
+                              : followUpRequiresPayment
+                              ? `Top up ${FOLLOWUP_PAID_SOL} SOL to continue chatting…`
+                              : attachments.length > 0
+                              ? "Add a note for the agents… (optional)"
+                              : "Ask the swarm a question…"
+                          }
+                          className="w-full rounded-lg border border-white/10 bg-black/50 py-2 pl-3 pr-10 text-[13px] text-white/90 placeholder:text-white/25 focus:border-cyan-300/35 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                        />
+                        {autoInvoking ? (
+                          <button
+                            onClick={stopRun}
+                            title="Stop the agent run"
+                            aria-label="Stop"
+                            className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md border border-rose-300/40 bg-rose-300/15 p-1.5 text-rose-200 hover:bg-rose-300/25"
+                          >
+                            <Square className="h-3.5 w-3.5 fill-current" />
+                          </button>
+                        ) : (
+                          <button
+                            onClick={sendMessage}
+                            disabled={!draft.trim() && attachments.length === 0}
+                            title={followUpRequiresPayment ? `Send (requires ${FOLLOWUP_PAID_SOL} SOL)` : undefined}
+                            className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md bg-gradient-to-r from-cyan-400 to-purple-400 p-1.5 text-black disabled:opacity-40"
+                            aria-label="Send"
+                          >
+                            <Send className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </Card>
