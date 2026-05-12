@@ -188,3 +188,65 @@ body {
 
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Solana wallet-adapter-react-ui modal — restyled to match the HiveMind dark
+ * theme. The library ships a generic light-on-purple look; we override the CSS
+ * variables it exposes so the modal renders with our cyan/purple gradient palette.
+ * ───────────────────────────────────────────────────────────────────────────── */
+.wallet-adapter-modal-wrapper {
+  background: linear-gradient(180deg, rgba(10, 13, 24, 0.98) 0%, rgba(6, 7, 15, 0.98) 100%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  box-shadow:
+    0 0 0 1px rgba(34, 211, 238, 0.05),
+    0 30px 80px -20px rgba(0, 0, 0, 0.7) !important;
+  border-radius: 16px !important;
+  color: rgba(255, 255, 255, 0.92) !important;
+}
+
+.wallet-adapter-modal-overlay {
+  background: rgba(2, 4, 10, 0.7) !important;
+  backdrop-filter: blur(4px);
+}
+
+.wallet-adapter-modal-title {
+  color: rgba(255, 255, 255, 0.92) !important;
+  font-size: 16px !important;
+  font-weight: 500 !important;
+}
+
+.wallet-adapter-modal-list .wallet-adapter-button {
+  background: rgba(255, 255, 255, 0.02) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 12px !important;
+  color: rgba(255, 255, 255, 0.9) !important;
+  font-weight: 500 !important;
+  transition: border-color 150ms, background 150ms;
+}
+
+.wallet-adapter-modal-list .wallet-adapter-button:hover {
+  background: rgba(34, 211, 238, 0.04) !important;
+  border-color: rgba(34, 211, 238, 0.3) !important;
+}
+
+.wallet-adapter-modal-list .wallet-adapter-button:not([disabled]):hover {
+  background: rgba(34, 211, 238, 0.04) !important;
+}
+
+.wallet-adapter-modal-button-close {
+  background: rgba(255, 255, 255, 0.03) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 10px !important;
+}
+
+.wallet-adapter-modal-button-close:hover {
+  background: rgba(34, 211, 238, 0.08) !important;
+}
+
+.wallet-adapter-modal-button-close svg {
+  fill: rgba(255, 255, 255, 0.7) !important;
+}
+
+.wallet-adapter-modal-list-more {
+  color: rgba(34, 211, 238, 0.85) !important;
+}

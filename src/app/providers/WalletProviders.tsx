@@ -1,8 +1,13 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef } from "react";
 import { ConnectionProvider, useWallet, WalletProvider } from "@solana/wallet-adapter-react";
+import { WalletModalProvider } from "@solana/wallet-adapter-react-ui";
 import { PhantomWalletAdapter, SolflareWalletAdapter } from "@solana/wallet-adapter-wallets";
 import { clusterApiUrl } from "@solana/web3.js";
 import { emitWalletError } from "../../lib/wallet-events";
+// Official wallet-adapter-react-ui stylesheet. We override the look in src/index.css
+// so it matches the dark HiveMind theme, but the base styles must be present for the
+// modal to render correctly.
+import "@solana/wallet-adapter-react-ui/styles.css";
 
 /** Watches the wallet adapter for in-extension account switches. The Solana wallet
  *  adapter's React context updates `publicKey` when the user switches accounts inside
@@ -67,8 +72,14 @@ export function WalletProviders({ children }: { children: ReactNode }) {
   return (
     <ConnectionProvider endpoint={endpoint}>
       <WalletProvider wallets={wallets} autoConnect onError={onError}>
-        <WalletAccountWatcher />
-        {children}
+        {/* Official wallet-adapter-react-ui modal — handles wallet selection, popup
+            timing, install links, mobile QR flows, and edge cases (stuck connecting,
+            multiple-attempt races) that our custom picker hit. Triggered from the
+            WalletButton via useWalletModal().setVisible(true). */}
+        <WalletModalProvider>
+          <WalletAccountWatcher />
+          {children}
+        </WalletModalProvider>
       </WalletProvider>
     </ConnectionProvider>
   );

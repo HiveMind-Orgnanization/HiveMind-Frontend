@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useWallet } from "@solana/wallet-adapter-react";
+import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import {
   Wallet,
   ChevronDown,
@@ -12,7 +13,6 @@ import {
 } from "lucide-react";
 import { apiConfigured } from "../../../lib/api";
 import { useWalletBackendAuth } from "../../hooks/useWalletBackendAuth";
-import { WalletPickerModal } from "./wallet-picker-modal";
 import {
   WALLET_ERROR_EVENT,
   type WalletErrorDetail,
@@ -27,11 +27,11 @@ function shorten(pk: string | undefined | null) {
 
 export function WalletButton() {
   const { wallet, publicKey, connected, connecting, disconnect, select } = useWallet();
+  const { setVisible: setWalletModalVisible, visible: walletModalVisible } = useWalletModal();
   const apiOk = apiConfigured();
   const { signedIn, busy: signingIn, error, signIn, signOut } = useWalletBackendAuth();
 
   const [open, setOpen] = useState(false);
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [walletError, setWalletError] = useState<string | null>(null);
   const [coords, setCoords] = useState<{ top: number; right: number } | null>(null);
@@ -71,8 +71,8 @@ export function WalletButton() {
   // Also clear the error the moment the user opens the picker again — they're
   // about to retry, the previous "Cancelled" label is no longer relevant.
   useEffect(() => {
-    if (pickerOpen) setWalletError(null);
-  }, [pickerOpen]);
+    if (walletModalVisible) setWalletError(null);
+  }, [walletModalVisible]);
 
   // Position the portal-rendered dropdown relative to the trigger button.
   useLayoutEffect(() => {
@@ -141,7 +141,7 @@ export function WalletButton() {
   const handleChange = () => {
     setOpen(false);
     select(null);
-    setPickerOpen(true);
+    setWalletModalVisible(true);
   };
 
   const handleDisconnect = async () => {
@@ -162,7 +162,10 @@ export function WalletButton() {
           type="button"
           onClick={() => {
             setWalletError(null);
-            setPickerOpen(true);
+            // Open the official wallet-adapter-react-ui modal. It handles the entire
+            // pick → select → connect flow with proper user-gesture preservation,
+            // so we never hit the "stuck on Connecting" bug our custom picker had.
+            setWalletModalVisible(true);
           }}
           disabled={connecting}
           className="group relative flex h-[34px] items-center gap-2 overflow-hidden rounded-lg border border-cyan-300/30 bg-gradient-to-r from-cyan-300/10 via-purple-400/10 to-cyan-300/10 px-3 text-xs font-medium text-cyan-100 shadow-[0_0_0_1px_rgba(34,211,238,0.05)] transition hover:border-cyan-300/50 hover:from-cyan-300/15 hover:to-purple-400/15 disabled:opacity-60"
@@ -299,7 +302,6 @@ export function WalletButton() {
       )}
 
       {dropdown}
-      <WalletPickerModal open={pickerOpen} onClose={() => setPickerOpen(false)} />
     </>
   );
 }
