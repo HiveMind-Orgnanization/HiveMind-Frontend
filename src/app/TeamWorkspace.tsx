@@ -86,27 +86,29 @@ export default function TeamWorkspace() {
 
   const overview = useMemo(() => {
     const activeMissions = rawMissions.filter((m) => m.status === "active").length;
+    const completedMissions = rawMissions.filter((m) => m.status === "completed").length;
     const totalBudget = rawMissions.reduce((s, m) => s + (m.budget ?? m.cost ?? 0), 0);
+    // Coordination = ratio of completed missions to total (a rough "things ship" signal).
+    // Falls back to em-dash when there's no data — better than a fabricated "98.4%".
+    const coordPct = rawMissions.length > 0
+      ? Math.round((completedMissions / rawMissions.length) * 100)
+      : null;
     return [
-      { l: "Members",         v: "12",                                   sub: "humans",     i: Users,    c: "#22d3ee" },
-      { l: "AI Agents",       v: agents.length > 0 ? String(agents.length) : "9",   sub: "active",     i: Cpu,      c: "#a855f7" },
-      { l: "Active Missions", v: rawMissions.length > 0 ? String(activeMissions) : "5", sub: "in flight", i: Rocket, c: "#3b82f6" },
-      { l: "Treasury",        v: totalBudget > 0 ? `${totalBudget.toFixed(0)} SOL` : "2,418 SOL", sub: "shared", i: Wallet, c: "#10b981" },
-      { l: "Coordination",    v: "98.4%",                                sub: "sync",       i: Network,  c: "#06b6d4" },
+      // Team membership / multi-user features aren't shipped yet. Show 1 (the connected
+      // wallet) instead of pretending there's a 12-person team.
+      { l: "Members",         v: "1",                                            sub: "you",         i: Users,    c: "#22d3ee" },
+      { l: "AI Agents",       v: agents.length > 0 ? String(agents.length) : "—", sub: "registered",  i: Cpu,      c: "#a855f7" },
+      { l: "Active Missions", v: String(activeMissions),                          sub: "in flight",   i: Rocket,   c: "#3b82f6" },
+      { l: "Treasury",        v: totalBudget > 0 ? `${totalBudget.toFixed(2)} SOL` : "0 SOL", sub: "committed",  i: Wallet, c: "#10b981" },
+      { l: "Coordination",    v: coordPct != null ? `${coordPct}%` : "—",         sub: coordPct != null ? "complete" : "no data", i: Network, c: "#06b6d4" },
     ];
   }, [rawMissions, agents]);
 
   const missions = useMemo(() => {
-    if (rawMissions.length === 0) return [
-      { id: "M-247", t: "Solana AI Marketing Campaign", members: ["A", "H", "L"],      agents: 6, progress: 68,  status: "active",    c: "#22d3ee" },
-      { id: "M-241", t: "Investor Pitch Coordination",  members: ["A", "V"],           agents: 4, progress: 42,  status: "active",    c: "#a855f7" },
-      { id: "M-238", t: "Landing Page Workflow",        members: ["A", "L"],           agents: 3, progress: 88,  status: "settling",  c: "#3b82f6" },
-      { id: "M-229", t: "Solana Growth Strategy",       members: ["A", "H", "V", "L"], agents: 8, progress: 100, status: "completed", c: "#10b981" },
-    ];
     return rawMissions.map((m, i) => ({
       id: m.id.slice(0, 8).toUpperCase(),
       t: m.title,
-      members: (m.agents ?? []).slice(0, 3).map((a: string) => a[0].toUpperCase()),
+      members: (m.agents ?? []).slice(0, 3).map((a: string) => a[0]?.toUpperCase() ?? "?"),
       agents: (m.agents ?? []).length,
       progress: m.progress ?? (m.status === "completed" ? 100 : m.status === "active" ? 60 : 20),
       status: missionStatusMap[m.status] ?? m.status,
@@ -135,7 +137,7 @@ export default function TeamWorkspace() {
               title="Team Workspace"
               subtitle="AI-native collaborative workspace · autonomous organization operating system."
               crumbs={[{ label: "Team" }]}
-              status={{ label: "Workspace · Astra Org", tone: "purple" }}
+              status={{ label: "Workspace · single-user beta", tone: "purple" }}
               actions={
                 <div className="flex items-center gap-2">
                   <button className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white/85 hover:border-cyan-300/30">
@@ -224,7 +226,16 @@ export default function TeamWorkspace() {
                           <Skeleton className="col-span-1 h-6 w-10 ml-auto" />
                         </div>
                       ))
-                    : missions.map((m, i) => {
+                    : missions.length === 0 ? (
+                      <div className="px-5 py-12 text-center text-sm text-white/45">
+                        <Target className="mx-auto h-5 w-5 text-white/30" />
+                        <div className="mt-2 text-white/70">No team missions yet</div>
+                        <div className="mt-1 text-xs text-white/40">
+                          Launch a mission from <span className="text-cyan-300/85">Mission Control</span> — it
+                          will appear here for the connected wallet.
+                        </div>
+                      </div>
+                    ) : missions.map((m, i) => {
                     const tone = missionTone[m.status] ?? missionTone["active"];
                     return (
                       <motion.div
@@ -309,15 +320,13 @@ export default function TeamWorkspace() {
                     {agentsLoading
                       ? <Skeleton className="h-9 w-32" />
                       : <span className="text-3xl tabular-nums">
-                          {rawMissions.length > 0
-                            ? rawMissions.reduce((s, m) => s + (m.budget ?? m.cost ?? 0), 0).toFixed(2)
-                            : "2,418.62"}
+                          {rawMissions.reduce((s, m) => s + (m.budget ?? m.cost ?? 0), 0).toFixed(2)}
                         </span>
                     }
                     <span className="text-sm text-white/55">SOL</span>
-                    <span className="ml-auto inline-flex items-center gap-1 text-xs text-emerald-300">
-                      <ArrowUpRight className="h-3 w-3" /> +24.0
-                    </span>
+                    {rawMissions.length === 0 && (
+                      <span className="ml-auto text-[11px] text-white/35">no missions yet</span>
+                    )}
                   </div>
 
                   {/* Stacked bar */}
@@ -353,7 +362,31 @@ export default function TeamWorkspace() {
               </Card>
             </div>
 
-            {/* Roles + Members */}
+            {/* Multi-user collaboration features (roles, members, activity feed,
+                workflow visualization, cross-team metrics) aren't wired to real data —
+                they're aspirational and only made sense as a marketing mock. Replaced
+                with an honest "coming soon" card so the page doesn't pretend to track
+                a team that doesn't exist for this wallet. */}
+            <Card className="mb-6 border-dashed">
+              <div className="px-6 py-8 text-center">
+                <UsersRound className="mx-auto h-6 w-6 text-white/35" aria-hidden />
+                <div className="mt-3 text-sm text-white/75">Multi-user team workspace · coming soon</div>
+                <div className="mx-auto mt-2 max-w-md text-xs text-white/45">
+                  Roles, member invites, shared activity feeds, and cross-team workflow
+                  orchestration are on the roadmap. For now the workspace is single-user
+                  and scoped to your connected wallet — every mission, payment, and
+                  artifact you see on this page is yours alone.
+                </div>
+              </div>
+            </Card>
+
+            {/* Original aspirational sections kept below, gated behind a flag so they
+                don't render. Left in source so the layout can be restored quickly when
+                the underlying APIs (team members, activity stream, multisig governance)
+                ship. Wrapped in a fragment because JSX-gating a sequence of siblings
+                requires a single root. */}
+            {false && (
+            <>
             <div className="mb-6 grid gap-6 xl:grid-cols-3">
               <Card>
                 <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
@@ -576,7 +609,7 @@ export default function TeamWorkspace() {
               </Card>
             </div>
 
-            {/* Org performance footer */}
+            {/* Org performance footer — fabricated metrics, gated off with the rest. */}
             <Card className="mb-6">
               <div className="grid grid-cols-2 gap-px bg-white/5 md:grid-cols-4">
                 {[
@@ -595,6 +628,8 @@ export default function TeamWorkspace() {
                 ))}
               </div>
             </Card>
+            </>
+            )}
           </div>
         </div>
       </div>
