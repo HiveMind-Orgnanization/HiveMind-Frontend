@@ -72,42 +72,29 @@ function parseSnapshot(raw: string): WorkspaceSnapshotV1 | null {
 
 export function loadWorkspaceSnapshot(walletPk: string | null, missionId: string): WorkspaceSnapshotV1 | null {
   if (typeof window === "undefined") return null;
-  // Only the wallet-scoped key is honored. Legacy un-scoped snapshots are intentionally
-  // ignored — copying them forward into the current wallet's slot WAS the bug it was
-  // trying to fix: when wallet B opened a mission that wallet A had cached, wallet B
-  // would inherit wallet A's chat history. We accept some lost chat on the first load
-  // after this fix in exchange for a clean cross-tenant boundary.
+  // Primary path: wallet-scoped key.
   const scoped = localStorage.getItem(storageKey(walletPk, missionId));
   if (scoped) return parseSnapshot(scoped);
-  return null;
-}
-
-/** One-time cleanup of any old un-scoped snapshot keys. Called by useMissions once on mount.
- *  Idempotent — safe to call from multiple components. */
-export function purgeLegacyWorkspaceSnapshots(): void {
-  if (typeof window === "undefined") return;
-  try {
-    const toDelete: string[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (!key) continue;
-      // Legacy keys are `hm-workspace-v1:<missionId>` — no wallet pubkey segment.
-      // Wallet-scoped keys have THREE colon-separated segments after the prefix.
-      // Anything matching the prefix but missing the wallet segment is legacy.
-      if (key.startsWith(LEGACY_PREFIX)) {
-        const tail = key.slice(LEGACY_PREFIX.length);
-        // Wallet pubkeys are base58 and never contain a colon; mission ids never do
-        // either. Wallet-scoped form: `<walletPk>:<missionId>` → exactly one colon.
-        // Legacy form: `<missionId>` → zero colons.
-        if (!tail.includes(":")) toDelete.push(key);
-      }
+  // First-claim migration: if there's a legacy un-scoped snapshot for this mission AND
+  // the wallet-scoped slot is empty, the currently-connected wallet "claims" it. We
+  // copy the legacy data into the wallet-scoped slot, then delete the legacy key so
+  // NO OTHER WALLET can read it later. This preserves chat history for the original
+  // owner (who is the most likely first-claimer) without leaking it across wallets.
+  // If a different wallet opens the mission first, they get an empty workspace —
+  // which is correct, because we have no proof they own the mission's chat.
+  const legacy = localStorage.getItem(legacyStorageKey(missionId));
+  if (!legacy) return null;
+  const snap = parseSnapshot(legacy);
+  if (snap && walletPk) {
+    try {
+      localStorage.setItem(storageKey(walletPk, missionId), legacy);
+      // Delete the legacy key so subsequent wallets can't claim the same data.
+      localStorage.removeItem(legacyStorageKey(missionId));
+    } catch {
+      /* ignore */
     }
-    for (const key of toDelete) {
-      try { localStorage.removeItem(key); } catch { /* ignore */ }
-    }
-  } catch {
-    /* ignore quota / private mode */
   }
+  return snap;
 }
 
 export function saveWorkspaceSnapshot(

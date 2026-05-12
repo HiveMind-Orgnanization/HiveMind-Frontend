@@ -46,6 +46,33 @@ export function useWalletBackendAuth() {
     [tick, connected, walletStr],
   );
 
+  // Clear any stale sign-in error once we successfully sign in OR the user disconnects
+  // and reconnects — without this, a previous "User rejected the request." (raw error
+  // from a wallet popup the user cancelled earlier) lingers in the wallet dropdown
+  // forever, even after a clean reconnect. Also normalize the raw message into a
+  // friendly token here so the dropdown reads "Cancelled" instead of the SDK text.
+  useEffect(() => {
+    if (signedIn) setError(null);
+  }, [signedIn]);
+  useEffect(() => {
+    if (!connected) setError(null);
+  }, [connected]);
+  // Mirror the friendly mapping the wallet-button onErr listener uses, so the auth
+  // error and the adapter error read the same in the dropdown.
+  const friendlyError = useMemo(() => {
+    if (!error) return null;
+    if (/reject|cancel/i.test(error)) return "Cancelled";
+    if (/timeout/i.test(error)) return "Wallet timed out";
+    if (/not\s*detected|not\s*found/i.test(error)) return "Wallet not detected";
+    return error.length > 80 ? `${error.slice(0, 77)}…` : error;
+  }, [error]);
+  // Auto-clear lingering errors after 6s so they never sit in the dropdown indefinitely.
+  useEffect(() => {
+    if (!error) return;
+    const t = window.setTimeout(() => setError(null), 6000);
+    return () => window.clearTimeout(t);
+  }, [error]);
+
   const signIn = useCallback(async (): Promise<boolean> => {
     setError(null);
     if (!apiConfigured()) {
@@ -94,7 +121,7 @@ export function useWalletBackendAuth() {
   return {
     signedIn,
     busy,
-    error,
+    error: friendlyError,
     signIn,
     signOut,
     apiReachable: apiConfigured(),
