@@ -80,6 +80,7 @@ import { useAgents, useTasks, useHiveMindRealtime, useMemoryChunks } from "./hoo
 import { publishLocalActivity } from "../lib/agent-activity-bus";
 import { AgentMessageMarkdown } from "./components/agent-message-markdown";
 import { buildArtifactTree, dedupeArtifactsByPath, type ArtifactTreeNode } from "../lib/artifact-tree";
+import { CodeViewer } from "./components/CodeViewer";
 import { SandpackProvider, SandpackPreview as SandpackFrame, useSandpack } from "@codesandbox/sandpack-react";
 
 // All agent invocations default to gpt-5.5 (the backend routes Development/Coordination
@@ -4356,12 +4357,13 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                                 Copy
                               </button>
                             </div>
-                            <pre
-                              className="min-h-0 min-w-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[12px] leading-relaxed text-white/85"
-                              style={{ wordBreak: "break-word", overflowWrap: "anywhere" }}
-                            >
-                              <code className="block">{a.content}</code>
-                            </pre>
+                            <div className="min-h-0 min-w-0 flex-1 overflow-auto">
+                              <CodeViewer
+                                content={a.content}
+                                path={a.path}
+                                language={a.language}
+                              />
+                            </div>
                           </div>
                       );
                     })()}
