@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
+import { useWallet } from "@solana/wallet-adapter-react";
 import { motion } from "motion/react";
+import { toast } from "sonner";
 import {
   Crown, Shield, ShieldCheck, Star, Vote, Trophy, Zap,
   Lock, BadgeCheck, Network, Gauge, AlertCircle,
+  Search, RefreshCcw, Loader2,
 } from "lucide-react";
 import { Sidebar } from "./components/dashboard/sidebar";
 import { TopNav } from "./components/dashboard/topnav";
@@ -12,7 +15,7 @@ import { Particles } from "./components/particles";
 import { Skeleton } from "./components/ui/skeleton";
 import { WalletGate } from "./components/WalletGate";
 import { useReputationLeaderboard, useAgents, usePayments } from "./hooks/useHiveMind";
-import { useMissions } from "./store";
+import { useMissions, setActiveMissionIdForWallet } from "./store";
 import { labelForModel, resolveAgentModelId } from "../lib/agent-models";
 
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
@@ -117,12 +120,44 @@ function ScoreBar({ value, c }: { value: number; c: string }) {
   );
 }
 
+type SortKey = "rank" | "reputation" | "missions" | "trust" | "name";
+
 export default function Reputation() {
+  const navigate = useNavigate();
+  const { publicKey } = useWallet();
+  const walletPk = publicKey?.toBase58() ?? null;
   const [tab, setTab] = useState<"all" | "elite" | "verified" | "rising">("all");
-  const { leaderboard: apiLeaderboard, loading: lbLoading } = useReputationLeaderboard();
-  const { agents } = useAgents();
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<SortKey>("rank");
+  const [refreshing, setRefreshing] = useState(false);
+  const { leaderboard: apiLeaderboard, loading: lbLoading, reload: reloadLeaderboard } = useReputationLeaderboard();
+  const { agents, reload: reloadAgents } = useAgents();
   const { payments } = usePayments();
   const { missions, walletConnected } = useMissions();
+
+  // Manual refresh — re-pulls both /api/reputation and /api/agents so users
+  // can force a sync when they see stale tiers (e.g. after running a swarm
+  // that just settled new reputation rows server-side).
+  const refreshAll = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await Promise.all([reloadLeaderboard(), reloadAgents()]);
+      toast.success("Reputation refreshed");
+    } catch {
+      toast.error("Refresh failed");
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  // Pin a mission as active + jump to Agent Workspace. Same flow Dashboard
+  // uses when switching missions from the mission switcher, so the
+  // workspace opens with the right snapshot loaded.
+  const openMission = (missionId: string) => {
+    setActiveMissionIdForWallet(walletPk, missionId);
+    navigate("/agents");
+  };
 
   // Tick once a minute so any time-based labels (e.g. "live") stay fresh.
   const [, setTick] = useState(0);
@@ -174,8 +209,26 @@ export default function Reputation() {
   }, [registry]);
 
   const filtered = useMemo(() => {
-    return tab === "all" ? leaderboard : leaderboard.filter((a) => a.tier === tab);
-  }, [tab, leaderboard]);
+    let list = tab === "all" ? leaderboard : leaderboard.filter((a) => a.tier === tab);
+    if (query.trim()) {
+      const q = query.trim().toLowerCase();
+      list = list.filter(
+        (a) =>
+          a.name.toLowerCase().includes(q) ||
+          a.spec.toLowerCase().includes(q) ||
+          a.id.toLowerCase().includes(q),
+      );
+    }
+    switch (sort) {
+      case "reputation": list = [...list].sort((a, b) => b.trust - a.trust); break;
+      case "missions":   list = [...list].sort((a, b) => b.missions - a.missions); break;
+      case "trust":      list = [...list].sort((a, b) => b.coord - a.coord); break;
+      case "name":       list = [...list].sort((a, b) => a.name.localeCompare(b.name)); break;
+      case "rank":
+      default: /* already ranked by reputation */ break;
+    }
+    return list;
+  }, [tab, leaderboard, query, sort]);
 
   const topAgent = leaderboard[0] ?? null;
 
@@ -301,10 +354,22 @@ export default function Reputation() {
     const sevenDayCutoff = Date.now() - 7 * 86_400_000;
     const recentAttestations = payments.filter((p) => p.createdAt >= sevenDayCutoff).length;
     return [
-      { l: "Active Agents",      v: registry.length > 0 ? String(registry.length) : "—", sub: registry.length > 0 ? `${new Set(registry.map(a => a.specialization)).size} specializations` : "registry empty", i: ShieldCheck, c: "#22d3ee", muted: false },
-      { l: "Attestations / 7d",  v: recentAttestations > 0 ? recentAttestations.toLocaleString() : "—", sub: recentAttestations > 0 ? "on-chain settlements" : "no payments yet", i: Zap, c: "#f59e0b", muted: false },
-      { l: "Disputes (open)",    v: "Coming soon",     sub: "arbitration in v2",       i: AlertCircle, c: "#a855f7", muted: true },
-      { l: "Slashing Events",    v: "Coming soon",     sub: "stake slashing in v2",    i: Shield,      c: "#10b981", muted: true },
+      {
+        l: "Active Agents",
+        v: registry.length > 0 ? String(registry.length) : "—",
+        sub: registry.length > 0 ? `${new Set(registry.map((a) => a.specialization)).size} specializations` : "registry empty",
+        i: ShieldCheck, c: "#22d3ee", muted: false,
+        href: registry.length > 0 ? "/marketplace" : null,
+      },
+      {
+        l: "Attestations / 7d",
+        v: recentAttestations > 0 ? recentAttestations.toLocaleString() : "—",
+        sub: recentAttestations > 0 ? "on-chain settlements" : "no payments yet",
+        i: Zap, c: "#f59e0b", muted: false,
+        href: recentAttestations > 0 ? "/treasury" : null,
+      },
+      { l: "Disputes (open)",    v: "Coming soon",     sub: "arbitration in v2",       i: AlertCircle, c: "#a855f7", muted: true,  href: null },
+      { l: "Slashing Events",    v: "Coming soon",     sub: "stake slashing in v2",    i: Shield,      c: "#10b981", muted: true,  href: null },
     ];
   }, [registry, payments]);
 
@@ -345,6 +410,20 @@ export default function Reputation() {
                       {headerVerifierScore != null ? headerVerifierScore.toFixed(2) : "—"}
                     </span>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => void refreshAll()}
+                    disabled={refreshing}
+                    title="Re-pull /api/reputation + /api/agents"
+                    aria-label="Refresh reputation"
+                    className="inline-flex items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] p-2 text-white/65 transition hover:border-cyan-300/30 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {refreshing ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <RefreshCcw className="h-3.5 w-3.5" />
+                    )}
+                  </button>
                   <Link
                     to="/missions/new"
                     title="Mission completion is the on-chain attestation in v1"
@@ -427,18 +506,41 @@ export default function Reputation() {
                       {filtered.length} {filtered.length === 1 ? "agent" : "agents"}
                     </span>
                   </div>
-                  <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-black/40 p-1 text-[11px]">
-                    {(["all", "elite", "verified", "rising"] as const).map((t) => (
-                      <button
-                        key={t}
-                        onClick={() => setTab(t)}
-                        className={`rounded-md px-2.5 py-1 capitalize transition ${
-                          tab === t ? "bg-white/10 text-white" : "text-white/50 hover:text-white/80"
-                        }`}
-                      >
-                        {t}
-                      </button>
-                    ))}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="relative">
+                      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-white/40" />
+                      <input
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        placeholder="Search agents…"
+                        className="w-40 rounded-md border border-white/10 bg-black/40 py-1 pl-7 pr-2 text-[11px] text-white/85 placeholder:text-white/30 focus:border-cyan-300/35 focus:outline-none"
+                      />
+                    </div>
+                    <select
+                      value={sort}
+                      onChange={(e) => setSort(e.target.value as SortKey)}
+                      title="Sort agents"
+                      className="rounded-md border border-white/10 bg-black/40 px-2 py-1 text-[11px] text-white/85 focus:outline-none"
+                    >
+                      <option value="rank">Sort: Rank</option>
+                      <option value="reputation">Sort: Reputation</option>
+                      <option value="missions">Sort: Missions</option>
+                      <option value="trust">Sort: Trust</option>
+                      <option value="name">Sort: Name (A→Z)</option>
+                    </select>
+                    <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-black/40 p-1 text-[11px]">
+                      {(["all", "elite", "verified", "rising"] as const).map((t) => (
+                        <button
+                          key={t}
+                          onClick={() => setTab(t)}
+                          className={`rounded-md px-2.5 py-1 capitalize transition ${
+                            tab === t ? "bg-white/10 text-white" : "text-white/50 hover:text-white/80"
+                          }`}
+                        >
+                          {t}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
 
@@ -729,12 +831,15 @@ export default function Reputation() {
                 ) : (
                   <div className="space-y-2 p-3">
                     {missionLog.map((m, i) => (
-                      <motion.div
+                      <motion.button
                         key={m.id}
+                        type="button"
+                        onClick={() => openMission(m.id)}
+                        title={`Open ${m.id} in Agent Workspace`}
                         initial={{ opacity: 0, x: 6 }}
                         animate={{ opacity: 1, x: 0 }}
                         transition={{ delay: i * 0.05 }}
-                        className="relative rounded-lg border border-white/5 bg-white/[0.02] p-3 hover:border-cyan-300/30"
+                        className="relative block w-full cursor-pointer rounded-lg border border-white/5 bg-white/[0.02] p-3 text-left transition hover:border-cyan-300/30 hover:bg-white/[0.04]"
                       >
                         <div className="absolute left-0 top-0 h-full w-0.5 rounded-full" style={{ background: m.c }} />
                         <div className="flex items-center justify-between text-[11px]">
@@ -763,7 +868,7 @@ export default function Reputation() {
                              : "◔ queued"}
                           </span>
                         </div>
-                      </motion.div>
+                      </motion.button>
                     ))}
                   </div>
                 )}
@@ -818,22 +923,43 @@ export default function Reputation() {
                 </span>
               </div>
               <div className="grid gap-3 p-4 md:grid-cols-4">
-                {networkHealth.map((x, i) => (
-                  <motion.div
-                    key={x.l}
-                    initial={{ opacity: 0, y: 6 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: i * 0.05 }}
-                    className="rounded-xl border border-white/10 bg-black/30 p-4"
-                  >
-                    <div className="flex items-center justify-between">
-                      <x.i className="h-4 w-4" style={{ color: x.c }} />
-                      <span className="text-[10px] uppercase tracking-[0.25em] text-white/40">{x.l}</span>
-                    </div>
-                    <div className={`mt-3 tabular-nums ${x.muted ? "text-base text-white/55" : "text-2xl"}`}>{x.v}</div>
-                    <div className="mt-1 text-[11px] text-white/45">{x.sub}</div>
-                  </motion.div>
-                ))}
+                {networkHealth.map((x, i) => {
+                  const inner = (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <x.i className="h-4 w-4" style={{ color: x.c }} />
+                        <span className="text-[10px] uppercase tracking-[0.25em] text-white/40">{x.l}</span>
+                      </div>
+                      <div className={`mt-3 tabular-nums ${x.muted ? "text-base text-white/55" : "text-2xl"}`}>{x.v}</div>
+                      <div className="mt-1 text-[11px] text-white/45">{x.sub}</div>
+                    </>
+                  );
+                  return x.href ? (
+                    <Link
+                      key={x.l}
+                      to={x.href}
+                      className="block rounded-xl border border-white/10 bg-black/30 p-4 transition hover:border-cyan-300/40 hover:bg-white/[0.04]"
+                    >
+                      <motion.div
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: i * 0.05 }}
+                      >
+                        {inner}
+                      </motion.div>
+                    </Link>
+                  ) : (
+                    <motion.div
+                      key={x.l}
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: i * 0.05 }}
+                      className="rounded-xl border border-white/10 bg-black/30 p-4"
+                    >
+                      {inner}
+                    </motion.div>
+                  );
+                })}
               </div>
             </Card>
           </div>
