@@ -74,24 +74,61 @@ export default function Dashboard() {
   const { metrics: liveMetrics, loading: liveMetricsLoading } = useMissionLiveMetrics(active?.id);
   const [liveFeed, setLiveFeed] = useState<{ t: string; a: string; c: string; msg: string }[]>([]);
 
+  // Color map shared between live WS updates and the historical task hydration below.
+  const AGENT_FEED_COLOR: Record<string, string> = useMemo(() => ({
+    Strategy: "text-cyan-300",
+    Research: "text-purple-300",
+    Design: "text-blue-300",
+    Treasury: "text-emerald-300",
+    Analytics: "text-fuchsia-300",
+    Coordination: "text-cyan-300",
+    Development: "text-sky-300",
+    Marketing: "text-pink-300",
+    Memory: "text-amber-300",
+  }), []);
+
   useHiveMindActivity(
     useCallback((e) => {
       const ts = new Date(e.ts).toISOString().slice(11, 19);
-      const agentColors: Record<string, string> = {
-        Strategy: "text-cyan-300",
-        Research: "text-purple-300",
-        Design: "text-blue-300",
-        Treasury: "text-emerald-300",
-        Analytics: "text-fuchsia-300",
-        Coordination: "text-cyan-300",
-        Development: "text-sky-300",
-      };
-      const c = agentColors[e.agent] ?? "text-white/60";
+      const c = AGENT_FEED_COLOR[e.agent] ?? "text-white/60";
       setLiveFeed((prev) =>
         [{ t: ts, a: e.agent, c, msg: e.message.slice(0, 200) }, ...prev].slice(0, 28),
       );
-    }, []),
+    }, [AGENT_FEED_COLOR]),
   );
+
+  // Hydrate the feed from historical task data so a completed mission shows real
+  // activity instead of an empty "Waiting for agent activity…" placeholder. The live
+  // WS subscription continues to push new entries on top as they arrive.
+  useEffect(() => {
+    if (!active || apiTasks.length === 0) return;
+    setLiveFeed((prev) => {
+      // Only seed once per mission switch — never overwrite live updates that have
+      // already arrived.
+      if (prev.length > 0) return prev;
+      const seeded = [...apiTasks]
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, 28)
+        .map((t) => {
+          const ts = new Date(t.createdAt).toISOString().slice(11, 19);
+          const verb =
+            t.status === "done"
+              ? "completed"
+              : t.status === "active"
+                ? "working on"
+                : t.status === "failed"
+                  ? "failed at"
+                  : "queued";
+          return {
+            t: ts,
+            a: t.agent,
+            c: AGENT_FEED_COLOR[t.agent] ?? "text-white/60",
+            msg: `${verb} ${t.title}`.slice(0, 200),
+          };
+        });
+      return seeded;
+    });
+  }, [active?.id, apiTasks, AGENT_FEED_COLOR]);
 
   // Stages and task buckets computed from real task data.
   // Falls back to mission agent list as planned stages when no tasks loaded yet.
@@ -143,34 +180,53 @@ export default function Dashboard() {
     return apiAgents.map((a) => {
       const resolvedId = resolveAgentModelId(a.specialization, missionAgentModels);
       const model = resolvedId ? labelForModel(resolvedId) : a.model;
+      // Real per-agent task metrics from the live task stream — replaces the previous
+      // fake `latency = 90 + trustScore % 420` / `mem = 12 + missionsCompleted % 80`
+      // derivations that had no relationship to anything happening on the swarm.
+      const agentTasks = apiTasks.filter((t) => t.agent === a.specialization);
+      const agentDone = agentTasks.filter((t) => t.status === "done").length;
+      const donePct = agentTasks.length > 0 ? Math.round((agentDone / agentTasks.length) * 100) : 0;
+      const isActive = agentTasks.some((t) => t.status === "active");
       return {
         name: a.specialization,
         model,
-        status: a.trustScore >= 94 ? "Reasoning" : a.trustScore >= 88 ? "Streaming" : "Idle",
+        status: isActive
+          ? "Streaming"
+          : agentTasks.length > 0 && donePct === 100
+            ? "Done"
+            : agentTasks.length > 0
+              ? "Queued"
+              : "Idle",
         task: a.name,
         rep: a.reputation,
-        latency: 90 + (a.trustScore % 420),
-        mem: 12 + (a.missionsCompleted % 80),
+        tasks: agentTasks.length,
+        done: agentDone,
+        donePct,
         color: AGENT_UI_COLORS[a.specialization] ?? "#94a3b8",
       };
     });
-  }, [apiAgents, active]);
+  }, [apiAgents, apiTasks, active]);
 
   // Analytics metrics derived from real API data
   const analyticsMetrics = useMemo(() => {
     const totalTasks = liveMetrics?.opsTotal ?? apiTasks.length;
     const doneTasks =
       liveMetrics?.opsDone ?? apiTasks.filter((t) => t.status === "done").length;
-    const avgLatency =
-      dashboardAgents.length > 0
-        ? Math.round(dashboardAgents.reduce((sum, a) => sum + a.latency, 0) / dashboardAgents.length)
-        : null;
+    const failedTasks = apiTasks.filter((t) => t.status === "failed").length;
+    const activeTasks = apiTasks.filter((t) => t.status === "active").length;
+    // Active agents = agents that currently have at least one task in flight. Real
+    // signal we can derive from apiTasks instead of the previous fake-latency average.
+    const activeAgents = new Set(
+      apiTasks.filter((t) => t.status === "active").map((t) => t.agent),
+    ).size;
     const avgRep =
       dashboardAgents.length > 0
         ? (dashboardAgents.reduce((sum, a) => sum + a.rep, 0) / dashboardAgents.length).toFixed(2)
         : null;
     const successPct =
-      totalTasks > 0 ? Math.round((doneTasks / totalTasks) * 100) : active?.progress ?? 0;
+      totalTasks > 0
+        ? Math.round((doneTasks / Math.max(1, doneTasks + failedTasks)) * 100)
+        : active?.progress ?? 0;
     const rosterVal = liveMetrics
       ? `${liveMetrics.rosterBacked}/${liveMetrics.rosterTotal}`
       : active
@@ -182,7 +238,11 @@ export default function Dashboard() {
       { k: "Tasks Done", v: totalTasks > 0 ? `${doneTasks}/${totalTasks}` : "—", c: "#a855f7" },
       { k: "Avg Agent Rep", v: avgRep ?? "—", c: "#3b82f6" },
       { k: "Confidence", v: `${active?.confidence ?? 0}%`, c: "#10b981" },
-      { k: "Avg Latency", v: avgLatency != null ? `${avgLatency}ms` : "—", c: "#f59e0b" },
+      {
+        k: activeTasks > 0 ? "Active Tasks" : "Tasks in Flight",
+        v: activeTasks > 0 ? `${activeTasks} · ${activeAgents} agents` : "—",
+        c: "#f59e0b",
+      },
       { k: "Success Rate", v: `${successPct}%`, c: "#ec4899" },
     ];
   }, [liveMetrics, apiTasks, dashboardAgents, active]);
@@ -840,18 +900,21 @@ export default function Dashboard() {
                             </div>
                           </div>
                         </div>
+                        {/* Real per-agent stats from the live task stream. Rep is from
+                            the backend agent profile; Tasks + Done % are computed from
+                            the apiTasks filter on this agent's specialization. */}
                         <div className="mt-2 grid grid-cols-3 gap-2 text-[10px]">
                           <div className="rounded-md bg-white/[0.03] px-2 py-1">
                             <div className="text-white/40">Rep</div>
                             <div className="tabular-nums text-white/85">{a.rep}</div>
                           </div>
                           <div className="rounded-md bg-white/[0.03] px-2 py-1">
-                            <div className="text-white/40">Latency</div>
-                            <div className="tabular-nums text-white/85">{a.latency}ms</div>
+                            <div className="text-white/40">Tasks</div>
+                            <div className="tabular-nums text-white/85">{a.tasks}</div>
                           </div>
                           <div className="rounded-md bg-white/[0.03] px-2 py-1">
-                            <div className="text-white/40">Mem</div>
-                            <div className="tabular-nums text-white/85">{a.mem}%</div>
+                            <div className="text-white/40">Done</div>
+                            <div className="tabular-nums text-white/85">{a.donePct}%</div>
                           </div>
                         </div>
                       </motion.div>
