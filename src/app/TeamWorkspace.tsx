@@ -139,14 +139,36 @@ export default function TeamWorkspace() {
               crumbs={[{ label: "Team" }]}
               status={{ label: "Workspace · single-user beta", tone: "purple" }}
               actions={
+                // Both buttons depend on the multi-user team subsystem that hasn't shipped
+                // yet (shared chat needs a per-org WebSocket room + persisted history;
+                // invites need email or wallet-pubkey-based onboarding). Rather than wire
+                // dead onClicks, disable them with a "Soon" badge + tooltip so the intent
+                // is clear and judges don't click into a no-op.
                 <div className="flex items-center gap-2">
-                  <button className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white/85 hover:border-cyan-300/30">
-                    <MessageSquare className="h-3.5 w-3.5" /> Open chat
+                  <button
+                    type="button"
+                    disabled
+                    title="Team chat is part of the multi-user release"
+                    className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white/55 opacity-70"
+                  >
+                    <MessageSquare className="h-3.5 w-3.5" />
+                    Open chat
+                    <span className="ml-1 rounded-full border border-white/15 px-1.5 py-px text-[9px] uppercase tracking-widest text-white/45">
+                      Soon
+                    </span>
                   </button>
-                  <button className="group relative inline-flex items-center gap-2 overflow-hidden rounded-lg px-4 py-2 text-xs text-black">
+                  <button
+                    type="button"
+                    disabled
+                    title="Member invites ship with the multi-user release"
+                    className="group relative inline-flex cursor-not-allowed items-center gap-2 overflow-hidden rounded-lg px-4 py-2 text-xs text-black opacity-60"
+                  >
                     <span className="absolute inset-0 bg-gradient-to-r from-cyan-300 to-purple-300" />
                     <Plus className="relative h-3.5 w-3.5" />
                     <span className="relative">Invite Member</span>
+                    <span className="relative ml-1 rounded-full border border-black/20 bg-black/15 px-1.5 py-px text-[9px] uppercase tracking-widest">
+                      Soon
+                    </span>
                   </button>
                 </div>
               }
