@@ -377,8 +377,16 @@ export default function TeamWorkspace() {
                     ))}
                   </div>
 
-                  <button className="mt-4 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-emerald-300/30 bg-emerald-300/10 py-2 text-xs text-emerald-100 hover:bg-emerald-300/20">
+                  <button
+                    type="button"
+                    disabled
+                    title="Multisig allocation proposals are part of the multi-user release"
+                    className="mt-4 inline-flex w-full cursor-not-allowed items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] py-2 text-xs text-white/55 opacity-70"
+                  >
                     <Vote className="h-3.5 w-3.5" /> Propose allocation
+                    <span className="ml-1 rounded-full border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[9px] uppercase tracking-[0.25em] text-white/45">
+                      Soon
+                    </span>
                   </button>
                 </div>
               </Card>
