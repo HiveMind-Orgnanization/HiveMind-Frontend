@@ -141,6 +141,7 @@ function SecondaryButton({
 /** Outbound links surfaced across the landing page. Single source of truth so updating the
  *  demo URL or Twitter handle is a one-line change. */
 const DEMO_VIDEO_URL = "https://www.youtube.com/watch?v=5d9067mHfPE&t=1s";
+const DEMO_VIDEO_EMBED_URL = "https://www.youtube.com/embed/5d9067mHfPE?start=1&rel=0";
 const TWITTER_URL = "https://x.com/Jagadeeeshftw";
 const GITHUB_URL = "https://github.com/HiveMind-Orgnanization";
 
@@ -195,7 +196,7 @@ export default function App() {
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400 opacity-75" />
                 <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-cyan-400" />
               </span>
-              <span>Mainnet beta · Built on Solana</span>
+              <span>Devnet · Colosseum Hackathon · May 2026</span>
             </motion.div>
 
             <motion.h1
@@ -238,9 +239,9 @@ export default function App() {
               transition={{ duration: 1, delay: 0.6 }}
               className="mt-10 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 text-xs uppercase tracking-[0.25em] text-white/40"
             >
-              <span>● 12 active missions</span>
-              <span className="text-cyan-300">● 48 agents online</span>
-              <span>● 318.4 SOL settled today</span>
+              <span>● 9 specialist agents</span>
+              <span className="text-cyan-300">● 5 model vendors routed</span>
+              <span>● 400ms settlement on Solana</span>
             </motion.div>
           </div>
 
@@ -279,6 +280,44 @@ export default function App() {
               <div className="mt-1 text-sm">12.4 SOL → escrow</div>
               <div className="mt-2 text-[10px] text-white/40">tx: 0xA3C2…91FE · confirmed</div>
             </motion.div>
+          </motion.div>
+        </div>
+      </section>
+
+      {/* Embedded demo video — judges and visitors who land here can watch the run without
+          leaving the page. The standalone YouTube link is still available from every CTA. */}
+      <section id="demo" className="relative py-24">
+        <Glow className="left-1/2 top-10 h-[420px] w-[760px] -translate-x-1/2 rounded-full bg-cyan-500/15" />
+        <div className="relative mx-auto max-w-5xl px-6">
+          <div className="mb-10 text-center">
+            <SectionLabel>Watch the demo</SectionLabel>
+            <h2 className="mx-auto max-w-3xl text-balance text-4xl tracking-tight md:text-5xl">
+              Three minutes.{" "}
+              <span className="bg-gradient-to-r from-cyan-200 to-purple-300 bg-clip-text text-transparent">
+                Nine agents.
+              </span>{" "}
+              One Solana app.
+            </h2>
+          </div>
+          <motion.div
+            initial={{ opacity: 0, y: 30 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true, amount: 0.2 }}
+            transition={{ duration: 0.8 }}
+            className="relative"
+          >
+            <div className="absolute -inset-4 rounded-[28px] bg-gradient-to-r from-cyan-500/20 via-purple-500/20 to-blue-500/20 blur-2xl" />
+            <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-black/60 shadow-2xl">
+              <div className="aspect-video">
+                <iframe
+                  src={DEMO_VIDEO_EMBED_URL}
+                  title="HiveMind — 9 AI Agents Built a Solana App in 3 Minutes"
+                  allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                  allowFullScreen
+                  className="h-full w-full"
+                />
+              </div>
+            </div>
           </motion.div>
         </div>
       </section>
@@ -567,8 +606,8 @@ export default function App() {
           </div>
         </div>
         <div className="mx-auto mt-10 flex max-w-7xl flex-col items-start justify-between gap-3 border-t border-white/5 px-6 pt-6 text-xs text-white/30 md:flex-row md:items-center">
-          <span>© 2026 HiveMind Protocol. All systems autonomous.</span>
-          <span className="font-mono">node://hivemind.sol · v0.7.4-mainnet</span>
+          <span>© 2026 HiveMind Protocol · Built for the Colosseum Hackathon.</span>
+          <span className="font-mono">node://hivemind.sol · v1.0-devnet · colosseum-2026</span>
         </div>
       </footer>
     </div>
