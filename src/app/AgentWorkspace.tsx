@@ -63,6 +63,7 @@ import {
   type WorkspaceSnapshotV1,
 } from "../lib/workspace-persistence";
 import { useAgents, useTasks, useHiveMindRealtime, useMemoryChunks } from "./hooks/useHiveMind";
+import { publishLocalActivity } from "../lib/agent-activity-bus";
 import { AgentMessageMarkdown } from "./components/agent-message-markdown";
 import { buildArtifactTree, dedupeArtifactsByPath, type ArtifactTreeNode } from "../lib/artifact-tree";
 import { SandpackProvider, SandpackPreview as SandpackFrame, useSandpack } from "@codesandbox/sandpack-react";
@@ -2570,6 +2571,11 @@ function AgentWorkspaceMissionBody({
     const errText0 = errors.slice(0, 6).join("\n");
     const shortErr = errText0.split("\n")[0]?.slice(0, 140) ?? "Preview error";
     const devColor = ALL_AGENTS.find((a) => a.name === "Development")?.color ?? "#22d3ee";
+    publishLocalActivity({
+      agent: "Development",
+      message: `[autofix.${attempt}] ${shortErr}`,
+      ts: Date.now(),
+    });
 
     // First attempt → spawn a fresh "Oh no, hit an error" bubble. Later attempts append a thought
     // into the same bubble so the user sees one cohesive narrative, not five duplicate cards.
@@ -2839,6 +2845,11 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
             "approved",
             `Preview repaired — ${result.artifactPathsApplied.length} file${result.artifactPathsApplied.length === 1 ? "" : "s"} updated (+${totalAdded} / -${totalRemoved} lines).`,
           );
+          publishLocalActivity({
+            agent: "Development",
+            message: `[autofix.done] +${totalAdded}/-${totalRemoved} lines · ${result.artifactPathsApplied.length} file(s)`,
+            ts: Date.now(),
+          });
         }
       } else if (result.persistArtifactParseFailed) {
         // Response truncated/malformed — the SandpackErrorMonitor re-fire window will retry.
@@ -2953,6 +2964,11 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
         Analytics: "#8b5cf6", Coordination: "#06b6d4", Memory: "#f59e0b",
       };
 
+      publishLocalActivity({
+        agent: "HiveMind",
+        message: `[swarm.start] mission ${mission.id} · ${mission.title.slice(0, 80)}`,
+        ts: Date.now(),
+      });
       const swarm = await swarmRunMissionApi(
         mission.id,
         { title: mission.title, objective: mission.objective },
@@ -2965,6 +2981,22 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
           onProgress: (progress: SwarmProgress) => {
             const progressTs = new Date().toLocaleTimeString("en-US", { hour12: false });
             const lastResult = progress.partialResults[progress.partialResults.length - 1];
+
+            // Mirror swarm progress to the local bus so Live Console streams
+            // even when the WS hop is broken (Vercel→EB has no WS proxy).
+            if (lastResult) {
+              publishLocalActivity({
+                agent: lastResult.role,
+                message: `[${lastResult.provider}] ${lastResult.replySnippet.slice(0, 320)}`,
+                ts: Date.now(),
+              });
+            } else if (progress.currentRole) {
+              publishLocalActivity({
+                agent: progress.currentRole,
+                message: `[progress] ${progress.currentRole} analysing…`,
+                ts: Date.now(),
+              });
+            }
 
             setMessages((prev) => prev.map((msg) => {
               if (msg.id !== hmId) return msg;
@@ -3014,6 +3046,11 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
       // remounts don't try to resume polling a job that has already terminated.
       markSwarmFinished(mission.id);
       if (!swarm.ok) {
+        publishLocalActivity({
+          agent: "HiveMind",
+          message: `[swarm.failed] ${swarm.message.slice(0, 240)}`,
+          ts: Date.now(),
+        });
         setMessages((prev) => prev.map((msg) =>
           msg.id === hmId ? { ...msg, state: "failed", text: swarm.message } : msg,
         ));
@@ -3021,6 +3058,11 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
         toast.error("Swarm run failed", { description: swarm.message, duration: 12_000 });
         return;
       }
+      publishLocalActivity({
+        agent: "HiveMind",
+        message: `[swarm.done] ${swarm.data.results.length} agents · ${swarm.data.artifactPaths?.length ?? 0} files written`,
+        ts: Date.now(),
+      });
 
       autoInvokedRef.current.add(mission.id);
       const data = swarm.data;
@@ -3362,6 +3404,11 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
       if (!firstAgentId) {
         void reloadAgents();
       } else {
+        publishLocalActivity({
+          agent: "Operator",
+          message: `[follow-up] ${text.slice(0, 200)}`,
+          ts: Date.now(),
+        });
         addThought(firstAgentName, "Analysing your request…", [], false);
         const firstRes = await invokeAgentApi(firstAgentId, {
           message: smartPrompt.replace("{AGENT}", firstAgentName),
@@ -3402,6 +3449,11 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
           }
           const paths = firstRes.artifactPathsApplied ?? [];
           addThought(firstAgentName, firstRes.reply, paths, true);
+          publishLocalActivity({
+            agent: firstAgentName,
+            message: `[${firstRes.provider}] ${humanizeReply(firstRes.reply).slice(0, 280) || `wrote ${paths.length} file(s)`}`,
+            ts: Date.now(),
+          });
           results.push({ agentName: firstAgentName, reply: firstRes.reply, paths });
 
           const wasCodeChange = paths.length > 0;
@@ -3432,6 +3484,11 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
               }
               const rPaths = res.artifactPathsApplied ?? [];
               addThought(agentName, res.reply, rPaths, true);
+              publishLocalActivity({
+                agent: agentName,
+                message: `[${res.provider}] ${humanizeReply(res.reply).slice(0, 280) || `wrote ${rPaths.length} file(s)`}`,
+                ts: Date.now(),
+              });
               results.push({ agentName, reply: res.reply, paths: rPaths });
             }
           }

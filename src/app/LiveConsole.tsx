@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import {
   Terminal, Activity, Cpu, Brain, Zap, Network, Wifi, GitBranch,
@@ -8,6 +8,7 @@ import { Sidebar } from "./components/dashboard/sidebar";
 import { TopNav } from "./components/dashboard/topnav";
 import { PageHeader } from "./components/dashboard/page-header";
 import { useHiveMindActivity } from "./hooks/useHiveMind";
+import { subscribeLocalActivity } from "../lib/agent-activity-bus";
 import { apiConfigured } from "../lib/api";
 
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
@@ -115,7 +116,9 @@ export default function LiveConsole() {
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [logs, stick]);
 
-  useHiveMindActivity((e) => {
+  // Shared push helper — both the remote WS feed and the local in-process bus
+  // funnel into this so the console renders one unified stream.
+  const pushActivity = useCallback((e: { agent: string; message: string; ts: number }) => {
     setLogs((l) => {
       idRef.current += 1;
       const line: LogLine = {
@@ -128,7 +131,16 @@ export default function LiveConsole() {
       const next = [...l, line];
       return next.length > 220 ? next.slice(next.length - 220) : next;
     });
-  });
+  }, []);
+
+  useHiveMindActivity(pushActivity);
+
+  // Local fallback — when the Vercel→EB hop drops the WebSocket, this still
+  // surfaces every agent invoke happening in the same tab so the console is
+  // never silent during an active mission.
+  useEffect(() => {
+    return subscribeLocalActivity(pushActivity);
+  }, [pushActivity]);
 
   const filtered = useMemo(
     () => (filter === "all" ? logs : logs.filter((l) => l.level === filter)),
