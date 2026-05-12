@@ -15,6 +15,7 @@ import { useAgents } from "./hooks/useHiveMind";
 import { usePayments } from "./hooks/useHiveMind";
 import { useMissions } from "./store";
 import { apiConfigured } from "../lib/api";
+import { labelForModel, resolveAgentModelId } from "../lib/agent-models";
 
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return (
@@ -222,23 +223,36 @@ export default function Analytics() {
     };
   }, [missionsInRange, range, rangeStart]);
 
+  // Real inference mix derived from missions' per-role model assignments
+  // (mission.config.agentModels — the actual routed model IDs, not the cosmetic
+  // registry agent.model field which only advertises the multi-provider story).
+  // Falls back to ROLE_HEADLINE_MODEL per assigned role when a mission predates
+  // the per-role override flow. Only light/standard-tier models surface here —
+  // premium/reasoning models are flagged "Coming soon" in Mission Create and
+  // never actually route, so they shouldn't show up in the donut either.
   const modelDist = useMemo(() => {
-    if (agents.length === 0) return [];
     const counts: Record<string, number> = {};
-    for (const a of agents) {
-      const m = a.model || "Unknown";
-      counts[m] = (counts[m] ?? 0) + 1;
+    let totalAssignments = 0;
+    for (const m of missionsInRange) {
+      const stored = m.config?.agentModels ?? {};
+      const roles = m.agents && m.agents.length > 0 ? m.agents : Object.keys(stored);
+      for (const role of roles) {
+        const modelId = resolveAgentModelId(role, stored);
+        if (!modelId) continue;
+        counts[modelId] = (counts[modelId] ?? 0) + 1;
+        totalAssignments += 1;
+      }
     }
-    const total = agents.length;
+    if (totalAssignments === 0) return [];
     return Object.entries(counts)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 5)
-      .map(([m, n], i) => ({
-        m,
-        pct: Math.round((n / total) * 100),
+      .map(([id, n], i) => ({
+        m: labelForModel(id),
+        pct: Math.round((n / totalAssignments) * 100),
         c: ["#22d3ee", "#a855f7", "#3b82f6", "#10b981", "#f59e0b"][i] ?? "#64748b",
       }));
-  }, [agents]);
+  }, [missionsInRange]);
 
   // Live Solana slot for the System Health card — same source the Treasury page uses.
   const [liveSlot, setLiveSlot] = useState<number | null>(null);
@@ -513,10 +527,13 @@ export default function Analytics() {
                   <span className="text-[10px] uppercase tracking-[0.25em] text-purple-300">{range}</span>
                 </div>
                 <div className="p-5">
-                  {agentsLoading ? (
-                    <div className="space-y-3">
-                      <Skeleton className="mx-auto h-44 w-44 rounded-full bg-white/5" />
-                      {[0,1,2,3,4].map(i => <Skeleton key={i} className="h-7 w-full bg-white/5 rounded-md" />)}
+                  {modelDist.length === 0 ? (
+                    <div className="grid place-items-center py-10 text-center text-xs text-white/40">
+                      <Brain className="mb-2 h-8 w-8 text-white/20" />
+                      <div className="text-sm text-white/65">No routed inference yet</div>
+                      <div className="mt-1">
+                        Launch a mission in the last {range} to populate the inference mix.
+                      </div>
                     </div>
                   ) : (
                     <>
@@ -544,8 +561,8 @@ export default function Analytics() {
                               );
                             });
                           })()}
-                          <text x="80" y="78" textAnchor="middle" fontSize="22" fill="white" className="tabular-nums">{agents.length || "—"}</text>
-                          <text x="80" y="96" textAnchor="middle" fontSize="9" fill="rgba(255,255,255,0.5)">agents</text>
+                          <text x="80" y="78" textAnchor="middle" fontSize="22" fill="white" className="tabular-nums">{modelDist.length}</text>
+                          <text x="80" y="96" textAnchor="middle" fontSize="9" fill="rgba(255,255,255,0.5)">models</text>
                         </svg>
                       </div>
                       <div className="mt-3 space-y-1.5">
