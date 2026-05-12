@@ -1112,19 +1112,18 @@ function HiveMindSwarmBubble({ m, onRegenerate }: { m: ChatMsg; onRegenerate?: (
         <p className="text-[13px] text-red-400/80">Swarm run failed. Try again.</p>
       )}
 
-      {/* Message actions — Copy + Regenerate, only on finalized bubbles */}
+      {/* Message actions — icon-only Copy + Regenerate, only on finalized bubbles */}
       {done && (
-        <div className="mt-1.5 flex items-center gap-1 text-[11px]">
+        <div className="mt-1.5 flex items-center gap-1">
           <button
             type="button"
             onClick={copyText}
             disabled={!m.text || m.text.trim().length === 0}
-            title="Copy message"
+            title={copied ? "Copied" : "Copy message"}
             aria-label="Copy message"
-            className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.02] px-2 py-1 text-white/55 transition hover:border-white/25 hover:text-white disabled:opacity-40 disabled:hover:border-white/10"
+            className="rounded-md border border-white/10 bg-white/[0.02] p-1.5 text-white/55 transition hover:border-white/25 hover:text-white disabled:opacity-40 disabled:hover:border-white/10"
           >
             {copied ? <Check className="h-3 w-3 text-emerald-300" /> : <Copy className="h-3 w-3" />}
-            <span>{copied ? "Copied" : "Copy"}</span>
           </button>
           {onRegenerate && (
             <button
@@ -1132,10 +1131,9 @@ function HiveMindSwarmBubble({ m, onRegenerate }: { m: ChatMsg; onRegenerate?: (
               onClick={() => onRegenerate(m.id)}
               title="Regenerate from the last operator message"
               aria-label="Regenerate"
-              className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.02] px-2 py-1 text-white/55 transition hover:border-cyan-300/35 hover:text-cyan-200"
+              className="rounded-md border border-white/10 bg-white/[0.02] p-1.5 text-white/55 transition hover:border-cyan-300/35 hover:text-cyan-200"
             >
               <RotateCcw className="h-3 w-3" />
-              <span>Regenerate</span>
             </button>
           )}
         </div>
