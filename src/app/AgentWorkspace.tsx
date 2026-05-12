@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Link, useNavigate } from "react-router";
 import { WalletGate } from "./components/WalletGate";
@@ -81,7 +81,13 @@ import { useAgents, useTasks, useHiveMindRealtime, useMemoryChunks } from "./hoo
 import { publishLocalActivity } from "../lib/agent-activity-bus";
 import { AgentMessageMarkdown } from "./components/agent-message-markdown";
 import { buildArtifactTree, dedupeArtifactsByPath, type ArtifactTreeNode } from "../lib/artifact-tree";
-import { CodeEditor } from "./components/CodeEditor";
+// CodeMirror has a circular-import surface that broke our production bundle
+// when imported eagerly here ("Cannot access 'et' before initialization").
+// Lazy-load the editor so the ~350 KB CodeMirror chunk is split out of the
+// main entry — also speeds up first paint on the dashboard.
+const CodeEditor = lazy(() =>
+  import("./components/CodeEditor").then((m) => ({ default: m.CodeEditor })),
+);
 import { SandpackProvider, SandpackPreview as SandpackFrame, useSandpack } from "@codesandbox/sandpack-react";
 
 // All agent invocations default to gpt-5.5 (the backend routes Development/Coordination
@@ -4560,15 +4566,24 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                               </div>
                             </div>
                             <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-                              <CodeEditor
-                                value={editorValue}
-                                path={a.path}
-                                language={a.language}
-                                editable={editing}
-                                wrap={editorWrap}
-                                onChange={editing ? setEditorDraft : () => undefined}
-                                onCmdS={editing ? () => void saveEdit() : undefined}
-                              />
+                              <Suspense
+                                fallback={
+                                  <div className="flex h-full items-center justify-center text-[11px] text-white/35">
+                                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin text-cyan-300" />
+                                    Loading editor…
+                                  </div>
+                                }
+                              >
+                                <CodeEditor
+                                  value={editorValue}
+                                  path={a.path}
+                                  language={a.language}
+                                  editable={editing}
+                                  wrap={editorWrap}
+                                  onChange={editing ? setEditorDraft : () => undefined}
+                                  onCmdS={editing ? () => void saveEdit() : undefined}
+                                />
+                              </Suspense>
                             </div>
                           </div>
                       );
