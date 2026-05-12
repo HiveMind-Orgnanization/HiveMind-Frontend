@@ -423,6 +423,42 @@ async function mergeMissionWorkspaceFromApi(
 }
 
 /**
+ * Strip `persistArtifactUpdates` JSON wrappers from agent replies before they
+ * land in the chat. Agents return `{"assistantReply":"…","fileUpdates":[…]}`
+ * when they save files — the user should see only the assistantReply text.
+ * Premium models occasionally wrap even non-persist replies in JSON, so we
+ * defensively humanize anything that looks JSON-shaped. Returns empty string
+ * when no human-readable content can be recovered.
+ *
+ * Order of attempts:
+ *   1. Strict JSON parse → take assistantReply / summary.
+ *   2. Regex fallback for truncated JSON (response cut off mid-fileUpdates).
+ *   3. Give up — caller falls back to a generic message.
+ */
+function humanizeReply(raw: string): string {
+  const t = (raw ?? "").trim();
+  if (!t) return "";
+  if (t.startsWith("{") || t.startsWith("```")) {
+    // Strip code fences if the model wrapped JSON in ```json ... ```
+    const fenced = t.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+    const body = fenced.startsWith("{") ? fenced : t;
+    try {
+      const j = JSON.parse(body) as { assistantReply?: string; summary?: string; reply?: string };
+      const s = (j.assistantReply || j.summary || j.reply || "").trim();
+      if (s) return s;
+    } catch {
+      // Truncated JSON — try a regex extract of "assistantReply":"…"
+      const m = body.match(/"assistantReply"\s*:\s*"((?:[^"\\]|\\.)*?)"/s);
+      if (m && m[1]) return m[1].replace(/\\n/g, "\n").replace(/\\"/g, '"');
+      const m2 = body.match(/"summary"\s*:\s*"((?:[^"\\]|\\.)*?)"/s);
+      if (m2 && m2[1]) return m2[1].replace(/\\n/g, "\n").replace(/\\"/g, '"');
+    }
+    return "";
+  }
+  return t;
+}
+
+/**
  * Any HiveMind/agent bubble persisted as `state: "thinking"` (or "delegating"/
  * "executing") was an in-flight invoke when the page reloaded. If the backend
  * job is still tracked (via swarm-tracker), we leave the bubble alone — the
@@ -2202,6 +2238,10 @@ function AgentWorkspaceMissionBody({
       // with another follow-up.
       const ts2 = new Date().toLocaleTimeString("en-US", { hour12: false });
       const paths = res.artifactPathsApplied ?? [];
+      // Humanize the raw reply (when persistArtifactUpdates=true it's a JSON
+      // wrapper) so the chat bubble shows only the human-readable summary.
+      const cleanReply = humanizeReply(res.reply) ||
+        `Patched ${paths.length} file${paths.length === 1 ? "" : "s"} while you were away.`;
       setMessages((prev) => prev.map((msg) => {
         if (msg.id !== hmId) return msg;
         const role = job.agentName;
@@ -2209,7 +2249,7 @@ function AgentWorkspaceMissionBody({
         const thoughts = (msg.thoughts ?? []).map((t) =>
           t.agent === job.agentName ? { ...t, done: true, text: summary, files: paths } : t,
         );
-        return { ...msg, state: "approved" as const, text: res.reply || msg.text, thoughts, ts: ts2 };
+        return { ...msg, state: "approved" as const, text: cleanReply, thoughts, ts: ts2 };
       }));
       hivemindMsgIdRef.current = null;
       if (paths.length > 0) {
@@ -3407,6 +3447,11 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
           setArtifacts(freshArtifacts);
           setSelectedArtifactId((cur) => cur ?? freshArtifacts![0]?.id ?? null);
         }
+        // Any successful chat-driven file write counts as fresh work — refill the
+        // auto-fix budget so a subsequent Sandpack runtime error can trigger up
+        // to MAX_ATTEMPTS new repair attempts without the user having to send
+        // another chat message.
+        previewAutoFixAttemptsRef.current = 0;
       }
 
       const fileChanges = results.flatMap((r) =>
@@ -3427,27 +3472,6 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
       const thinkingLog = script.map((e) => e.log);
 
       // 6. Synthesize all agent replies into one Coordination summary via a final agent call.
-      // Cleanse raw JSON dumps (truncated `persistArtifactUpdates` responses) — pull out only
-      // the human-readable `assistantReply` field, or fall back to a generic note. We never
-      // want the user to see `{"assistantReply":"…","fileUpdates":[{...}]}` in chat.
-      const humanizeReply = (raw: string): string => {
-        const t = (raw ?? "").trim();
-        if (!t) return "";
-        if (t.startsWith("{")) {
-          try {
-            const j = JSON.parse(t) as { assistantReply?: string; summary?: string };
-            const s = (j.assistantReply || j.summary || "").trim();
-            if (s) return s;
-          } catch {
-            // Truncated JSON — try a regex extract of "assistantReply":"…"
-            const m = t.match(/"assistantReply"\s*:\s*"((?:[^"\\]|\\.)*?)"/s);
-            if (m && m[1]) return m[1].replace(/\\n/g, "\n").replace(/\\"/g, '"');
-          }
-          // Couldn't extract anything readable from a JSON-shaped reply.
-          return "";
-        }
-        return t;
-      };
       const cleanReplies = results
         .map((r) => humanizeReply(r.reply))
         .filter((s) => s.length > 0);
@@ -3485,7 +3509,15 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
             },
           });
           markJobFinished(mission.id);
-          if (synthRes.ok && synthRes.reply) finalReply = synthRes.reply;
+          // The Coordination synth invoke is supposed to return plain text
+          // (we set persistArtifactUpdates: false and tell it "Do NOT use JSON
+          // format"), but premium models occasionally return JSON anyway and
+          // we'd dump `{"assistantReply":"…","fileUpdates":[...]}` straight
+          // into the chat. Defensively humanize.
+          if (synthRes.ok && synthRes.reply) {
+            const clean = humanizeReply(synthRes.reply);
+            if (clean) finalReply = clean;
+          }
         }
       }
 
