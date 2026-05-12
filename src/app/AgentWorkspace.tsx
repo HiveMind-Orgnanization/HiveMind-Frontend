@@ -11,6 +11,7 @@ import {
   FolderOpen, Sparkles, Maximize2, Minimize2, type LucideIcon,
   Square, Copy, RotateCcw, Check,
   Paperclip, FileText, FileType,
+  Mic, MicOff, Globe,
 } from "lucide-react";
 import {
   ingestFile,
@@ -19,6 +20,7 @@ import {
   ACCEPTED_FILE_TYPES,
   type ChatAttachment,
 } from "../lib/chat-attachments";
+import { useVoiceInput, RESEARCH_MODE_PREFIX } from "../lib/voice-input";
 import { Sidebar } from "./components/dashboard/sidebar";
 import { TopNav } from "./components/dashboard/topnav";
 import { PageHeader } from "./components/dashboard/page-header";
@@ -1885,6 +1887,36 @@ function AgentWorkspaceMissionBody({
     setAttachments((prev) => prev.filter((a) => a.id !== id));
   }, []);
 
+  // Composer toggles — research mode prepends a research-thinking prefix to
+  // the agent prompt (the underlying LLMs don't actually fetch live web
+  // pages, but the prefix asks them to be thorough, cite, and flag claims
+  // that need verification). Off by default; not persisted across sessions
+  // because it's an explicit per-turn decision, not a workspace preference.
+  const [researchMode, setResearchMode] = useState(false);
+
+  // Voice input — Web Speech API. Final transcripts append to the draft so
+  // multi-utterance dictation builds a longer message. Interim transcripts
+  // render as a live caption above the input so the user sees what's being
+  // captured. Recording stops automatically on send or composer unmount.
+  const voice = useVoiceInput({
+    onFinal: (chunk) => {
+      const trimmed = chunk.trim();
+      if (!trimmed) return;
+      setDraft((prev) => (prev ? `${prev} ${trimmed}` : trimmed));
+    },
+  });
+  // Auto-stop dictation when an agent run kicks off — otherwise the user's
+  // continued speech would silently overwrite the draft after the message
+  // has already been sent.
+  useEffect(() => {
+    if (autoInvoking && voice.recording) voice.stop();
+  }, [autoInvoking, voice]);
+  // Surface mic errors as toasts (instead of an inline banner that would
+  // shift the composer layout). voice.error resets on the next start().
+  useEffect(() => {
+    if (voice.error) toast.error("Voice input", { description: voice.error });
+  }, [voice.error]);
+
   // Follow-up paywall — after a mission settles, the original escrow has been spent. Give
   // the user FOLLOWUP_FREE_QUOTA free chat turns for small tweaks, then require a small
   // SOL top-up per additional message so further agent work is paid for.
@@ -3452,12 +3484,13 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
     previewAutoFixAttemptsRef.current = 0; // new message → fresh auto-fix budget
     const userTyped = draft.trim();
     // The user sees their typed text in the chat bubble; the agent sees the
-    // attachment context block prepended on top. Keeping the operator bubble
-    // clean of attachment dumps means the chat history stays readable.
+    // research prefix + attachment block prepended on top. Keeping the
+    // operator bubble clean of those dumps means the chat history stays
+    // readable.
     const attachmentBlock = buildAttachmentContextBlock(attachments);
-    const text = attachmentBlock
-      ? `${attachmentBlock}\n\n${userTyped || "(see attached files above)"}`
-      : userTyped;
+    const researchBlock = researchMode ? `${RESEARCH_MODE_PREFIX}\n` : "";
+    const userBlock = userTyped || (attachments.length > 0 ? "(see attached files above)" : "");
+    const text = `${researchBlock}${attachmentBlock ? `${attachmentBlock}\n\n` : ""}${userBlock}`.trim();
     const operatorDisplayText = userTyped || (attachments.length > 0
       ? `Sent ${attachments.length} attachment${attachments.length === 1 ? "" : "s"}.`
       : "");
@@ -3967,6 +4000,22 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                       </div>
                     )}
 
+                    {/* Live caption while dictating — sits above the input so the
+                        user sees what's being captured before it commits. */}
+                    {voice.recording && (
+                      <div className="mb-2 flex items-center gap-2 rounded-lg border border-rose-300/25 bg-rose-300/[0.06] px-2.5 py-1.5 text-[11px] text-rose-100">
+                        <motion.span
+                          animate={{ opacity: [0.4, 1, 0.4], scale: [1, 1.2, 1] }}
+                          transition={{ duration: 1.2, repeat: Infinity }}
+                          className="h-1.5 w-1.5 rounded-full bg-rose-300 shadow-[0_0_8px_rgba(244,114,182,0.9)]"
+                        />
+                        <span className="uppercase tracking-[0.25em] text-rose-200/70">listening</span>
+                        <span className="truncate text-white/75">
+                          {voice.interim || "Say something…"}
+                        </span>
+                      </div>
+                    )}
+
                     <div className="relative flex items-center gap-2">
                       <input
                         ref={fileInputRef}
@@ -3991,6 +4040,53 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                           <Paperclip className="h-3.5 w-3.5" />
                         )}
                       </button>
+
+                      {/* Web search / Research mode toggle. Prepends a research
+                          prefix to the next agent prompt so the LLM treats it
+                          as a thorough research task. Doesn't fetch live web
+                          pages — the prefix is honest about that. */}
+                      <button
+                        type="button"
+                        onClick={() => setResearchMode((v) => !v)}
+                        disabled={autoInvoking}
+                        title={researchMode ? "Research mode ON — click to disable" : "Enable research mode for the next message"}
+                        aria-label="Toggle research mode"
+                        aria-pressed={researchMode}
+                        className={`inline-flex items-center gap-1 rounded-md border px-2 py-1.5 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                          researchMode
+                            ? "border-cyan-300/45 bg-cyan-300/15 text-cyan-100"
+                            : "border-white/10 bg-white/[0.03] text-white/65 hover:border-cyan-300/30 hover:text-cyan-200"
+                        }`}
+                      >
+                        <Globe className="h-3.5 w-3.5" />
+                        <span className="hidden sm:inline">Research</span>
+                      </button>
+
+                      {/* Voice input — Web Speech API; hidden when the browser
+                          doesn't support it (Firefox). Visual recording state
+                          is the same red Square treatment we use for Stop, so
+                          users learn "red square = active capture/run". */}
+                      {voice.supported && (
+                        <button
+                          type="button"
+                          onClick={() => (voice.recording ? voice.stop() : voice.start())}
+                          disabled={autoInvoking}
+                          title={voice.recording ? "Stop dictation" : "Dictate (uses your browser's speech recognition)"}
+                          aria-label={voice.recording ? "Stop dictation" : "Start dictation"}
+                          aria-pressed={voice.recording}
+                          className={`rounded-md border p-1.5 transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                            voice.recording
+                              ? "border-rose-300/45 bg-rose-300/15 text-rose-200 hover:bg-rose-300/25"
+                              : "border-white/10 bg-white/[0.03] text-white/65 hover:border-cyan-300/30 hover:text-cyan-200"
+                          }`}
+                        >
+                          {voice.recording ? (
+                            <MicOff className="h-3.5 w-3.5" />
+                          ) : (
+                            <Mic className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                      )}
                       <div className="relative flex-1">
                         <input
                           value={draft}
