@@ -135,6 +135,62 @@ export default function LiveConsole() {
     [logs, filter]
   );
 
+  // Tick state so the "Last event Ns ago" label updates between events.
+  const [tickNow, setTickNow] = useState(Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setTickNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  // Real-time stats derived from the live logs. These run for both the demo synthetic
+  // stream and the API stream, so the console always shows useful telemetry.
+  const liveStats = useMemo(() => {
+    const now = Date.now();
+    const oneMinuteAgo = now - 60_000;
+    const recent = logs.filter((l) => {
+      // Parse the `[HH:MM:SS]` stamp as today; logs older than 60s drop out.
+      const [hh, mm, ss] = l.t.split(":").map((s) => Number(s));
+      if (!Number.isFinite(hh) || !Number.isFinite(mm) || !Number.isFinite(ss)) return false;
+      const d = new Date();
+      d.setHours(hh, mm, ss, 0);
+      return d.getTime() >= oneMinuteAgo;
+    });
+    const uniqueAgents = new Set(logs.map((l) => l.agent)).size;
+    const counts: Record<LogLevel, number> = {
+      info: 0, ok: 0, warn: 0, err: 0, tool: 0, model: 0, memory: 0,
+    };
+    for (const l of logs) counts[l.level] += 1;
+    // Bucket the last 60s into 12 × 5s slots for the mini bar chart.
+    const buckets = new Array(12).fill(0);
+    for (const l of recent) {
+      const [hh, mm, ss] = l.t.split(":").map((s) => Number(s));
+      const d = new Date();
+      d.setHours(hh, mm, ss, 0);
+      const ageMs = now - d.getTime();
+      const bucketIdx = Math.min(11, Math.max(0, Math.floor(ageMs / 5000)));
+      buckets[11 - bucketIdx] += 1;
+    }
+    const lastEventTs = logs.length > 0
+      ? (() => {
+          const last = logs[logs.length - 1]!;
+          const [hh, mm, ss] = last.t.split(":").map((s) => Number(s));
+          const d = new Date();
+          d.setHours(hh, mm, ss, 0);
+          return d.getTime();
+        })()
+      : null;
+    const secondsSinceLast = lastEventTs != null ? Math.max(0, Math.floor((tickNow - lastEventTs) / 1000)) : null;
+    return {
+      perMinute: recent.length,
+      uniqueAgents,
+      total: logs.length,
+      counts,
+      buckets,
+      bucketMax: Math.max(1, ...buckets),
+      secondsSinceLast,
+    };
+  }, [logs, tickNow]);
+
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[#04060c] text-white antialiased">
       <Sidebar />
@@ -238,10 +294,11 @@ export default function LiveConsole() {
             </Card>
             ) : null}
 
-            {/* Main split: logs (left), reasoning + models (right) — right column demo-only */}
-            <div className={`mb-6 grid gap-6 ${syntheticStream ? "xl:grid-cols-3" : "xl:grid-cols-1"}`}>
+            {/* Main split: logs on the left (always), real-data side panels on the right
+                in both demo and API mode. */}
+            <div className="mb-6 grid gap-6 xl:grid-cols-3">
               {/* Live Log Feed */}
-              <Card className={syntheticStream ? "xl:col-span-2" : undefined}>
+              <Card className="xl:col-span-2">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/5 px-5 py-3">
                   <div className="flex items-center gap-2 text-sm">
                     <Terminal className="h-4 w-4 text-cyan-300" />
@@ -276,7 +333,7 @@ export default function LiveConsole() {
                     const el = e.currentTarget;
                     setStick(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
                   }}
-                  className="h-[520px] overflow-y-auto bg-black/60 px-4 py-3 font-mono text-[12px] leading-relaxed"
+                  className="relative h-[520px] overflow-y-auto bg-black/60 px-4 py-3 font-mono text-[12px] leading-relaxed"
                   style={{
                     backgroundImage:
                       "linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px)",
@@ -284,19 +341,25 @@ export default function LiveConsole() {
                   }}
                 >
                   {filtered.length === 0 && (
-                    <div className="flex h-full max-w-lg flex-col justify-center gap-2 px-4 text-center text-[11px] leading-relaxed text-white/40">
-                      {syntheticStream ? (
-                        <span>Stream paused or cleared · resume demo above.</span>
-                      ) : (
-                        <>
-                          <span className="text-white/55">No events yet.</span>
-                          <span>
-                            Go to <strong className="text-white/70">Agent Workspace</strong> (/agents), choose{" "}
-                            <strong className="text-white/70">Development</strong> or <strong className="text-white/70">Design</strong>,
-                            send your login-page prompt with an active mission selected — each invoke posts a preview here over WebSocket (full reply remains in the workspace chat).
-                          </span>
-                        </>
-                      )}
+                    <div className="absolute inset-0 flex items-center justify-center p-6">
+                      <div className="flex max-w-md flex-col items-center gap-3 text-center text-[12px] leading-relaxed text-white/45">
+                        <div className="flex h-12 w-12 items-center justify-center rounded-full border border-cyan-300/20 bg-cyan-300/5">
+                          <Radio className="h-5 w-5 text-cyan-300/70" aria-hidden />
+                        </div>
+                        {syntheticStream ? (
+                          <span>Stream paused or cleared · resume demo above.</span>
+                        ) : (
+                          <>
+                            <div className="text-sm text-white/75">Listening for agent activity…</div>
+                            <div className="text-[11px] text-white/45">
+                              No <span className="font-mono text-cyan-300/70">agent.activity</span> events on{" "}
+                              <span className="font-mono text-white/60">channel global</span> yet. Open the{" "}
+                              <strong className="text-white/70">Agent Workspace</strong> with an active mission and
+                              send a prompt — each invoke streams a preview here in real time.
+                            </div>
+                          </>
+                        )}
+                      </div>
                     </div>
                   )}
                   {filtered.map((l) => (
@@ -325,74 +388,97 @@ export default function LiveConsole() {
                   )}
                 </div>
 
-                {/* Log volume (real counts only — no synthetic waveform in API mode) */}
+                {/* Live activity strip — works in both demo and API modes. Bar chart shows
+                    events per 5-second bucket over the last minute; the metrics row gives
+                    a quick read of stream health (events/min, unique agents, time since
+                    last event). */}
                 <div className="border-t border-white/5 p-3">
-                  <div className="mb-1 flex items-center justify-between text-[9px] uppercase tracking-[0.25em] text-white/40">
-                    <span>{syntheticStream ? "websocket traffic · demo" : "activity"}</span>
-                    <span className="text-cyan-300">{filtered.length} entries</span>
+                  <div className="mb-2 flex items-center justify-between text-[9px] uppercase tracking-[0.25em] text-white/40">
+                    <span>activity · last 60s</span>
+                    <span className="text-cyan-300">{filtered.length} entries · {liveStats.total} total</span>
                   </div>
-                  {syntheticStream ? (
-                    <svg viewBox="0 0 600 60" className="h-12 w-full">
-                      <defs>
-                        <linearGradient id="tfArea" x1="0" x2="0" y1="0" y2="1">
-                          <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.55" />
-                          <stop offset="100%" stopColor="#22d3ee" stopOpacity="0" />
-                        </linearGradient>
-                      </defs>
-                      {Array.from({ length: 60 }).map((_, i) => {
-                        const h = 8 + Math.sin(i * 0.6 + Date.now() / 1000) * 6 + Math.random() * 30;
+                  <div className="grid grid-cols-[1fr,auto] items-center gap-3">
+                    <svg viewBox="0 0 240 40" className="h-10 w-full" preserveAspectRatio="none">
+                      {liveStats.buckets.map((v, i) => {
+                        const h = Math.max(2, (v / liveStats.bucketMax) * 36);
                         return (
                           <rect
                             key={i}
-                            x={i * 10 + 2}
-                            y={60 - h}
-                            width={6}
+                            x={i * 20 + 2}
+                            y={40 - h}
+                            width={16}
                             height={h}
-                            fill="#22d3ee"
-                            opacity={0.15 + Math.random() * 0.5}
+                            fill={v > 0 ? "#22d3ee" : "#22d3ee"}
+                            opacity={v > 0 ? 0.55 + (v / liveStats.bucketMax) * 0.4 : 0.08}
+                            rx={1}
                           />
                         );
                       })}
                     </svg>
-                  ) : (
-                    <div className="rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-[10px] text-white/45">
-                      Synthetic traffic chart disabled in API mode. Entries reflect real{" "}
-                      <span className="font-mono text-cyan-300/90">agent.activity</span> payloads only.
+                    <div className="flex gap-3 text-[10px] uppercase tracking-[0.18em] text-white/40">
+                      <div className="text-center">
+                        <div className="font-mono text-[14px] tabular-nums text-cyan-300">
+                          {liveStats.perMinute}
+                        </div>
+                        <div>per min</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="font-mono text-[14px] tabular-nums text-purple-300">
+                          {liveStats.uniqueAgents}
+                        </div>
+                        <div>agents</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="font-mono text-[14px] tabular-nums text-emerald-300">
+                          {liveStats.secondsSinceLast == null
+                            ? "—"
+                            : liveStats.secondsSinceLast < 60
+                              ? `${liveStats.secondsSinceLast}s`
+                              : `${Math.floor(liveStats.secondsSinceLast / 60)}m`}
+                        </div>
+                        <div>since last</div>
+                      </div>
                     </div>
-                  )}
+                  </div>
                 </div>
               </Card>
 
-              {syntheticStream ? (
+              {/* Right column — real-data panels derived from the log stream. Works in
+                  both synthetic and API mode (counts are honest about which events have
+                  actually fired). */}
               <div className="space-y-6">
                 <Card>
                   <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
                     <div className="flex items-center gap-2 text-sm">
                       <Brain className="h-4 w-4 text-purple-300" />
-                      Chain of Thought
+                      Recent Activity
                     </div>
-                    <span className="text-[10px] uppercase tracking-[0.25em] text-purple-300">cognition</span>
+                    <span className="text-[10px] uppercase tracking-[0.25em] text-purple-300">tail · 12</span>
                   </div>
                   <div className="space-y-1 p-4 font-mono text-[11px] leading-relaxed">
-                    {reasoningTree.map((n, i) => (
-                      <motion.div
-                        key={i}
-                        initial={{ opacity: 0, x: -4 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ delay: i * 0.05 }}
-                        className="flex"
-                      >
-                        <span style={{ width: n.d * 14 }} />
-                        <span style={{ color: n.c }}>{n.t}</span>
-                      </motion.div>
-                    ))}
-                    <motion.span
-                      animate={{ opacity: [0.2, 1, 0.2] }}
-                      transition={{ duration: 1.4, repeat: Infinity }}
-                      className="text-cyan-300"
-                    >
-                      ▌
-                    </motion.span>
+                    {logs.length === 0 ? (
+                      <div className="py-6 text-center text-[11px] text-white/35">
+                        No activity yet. The tail will populate as agents fire events.
+                      </div>
+                    ) : (
+                      logs.slice(-12).reverse().map((l, i) => (
+                        <motion.div
+                          key={l.id}
+                          initial={{ opacity: 0, x: -4 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ delay: i * 0.02 }}
+                          className="flex items-baseline gap-2"
+                        >
+                          <span className="w-[40px] shrink-0 text-white/25 tabular-nums text-[10px]">
+                            {l.t.slice(3)}
+                          </span>
+                          <span className={`shrink-0 text-[10px] uppercase tracking-wider ${levelColor[l.level]}`}>
+                            {l.agent}
+                          </span>
+                          <span className="truncate text-white/65">{l.msg}</span>
+                        </motion.div>
+                      ))
+                    )}
                   </div>
                 </Card>
 
@@ -400,48 +486,66 @@ export default function LiveConsole() {
                   <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
                     <div className="flex items-center gap-2 text-sm">
                       <Hexagon className="h-4 w-4 text-cyan-300" />
-                      Model Execution
+                      Agents by Activity
                     </div>
-                    <span className="text-[10px] uppercase tracking-[0.25em] text-cyan-300">5 active</span>
+                    <span className="text-[10px] uppercase tracking-[0.25em] text-cyan-300">
+                      {liveStats.uniqueAgents} live
+                    </span>
                   </div>
                   <div className="space-y-2 p-3">
-                    {[
-                      { m: "claude-4.7-opus",  load: 86, lat: 240, tps: 142, c: "#22d3ee" },
-                      { m: "gpt-5",            load: 72, lat: 180, tps: 168, c: "#a855f7" },
-                      { m: "llama-4-maverick", load: 64, lat: 520, tps: 92,  c: "#3b82f6" },
-                      { m: "deepseek-v3",      load: 48, lat: 90,  tps: 112, c: "#10b981" },
-                      { m: "qwen-3-72b",       load: 38, lat: 140, tps: 78,  c: "#f59e0b" },
-                    ].map((m, i) => (
-                      <motion.div
-                        key={m.m}
-                        initial={{ opacity: 0, y: 4 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: i * 0.04 }}
-                        className="rounded-lg border border-white/10 bg-black/30 p-2.5"
-                      >
-                        <div className="flex items-center justify-between text-[11px]">
-                          <span className="font-mono">{m.m}</span>
-                          <span className="tabular-nums text-white/60">{m.tps}t/s</span>
-                        </div>
-                        <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-white/5">
+                    {(() => {
+                      const byAgent = new Map<string, number>();
+                      for (const l of logs) byAgent.set(l.agent, (byAgent.get(l.agent) ?? 0) + 1);
+                      const ranked = [...byAgent.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+                      const max = Math.max(1, ...ranked.map(([, n]) => n));
+                      const AGENT_COLOR: Record<string, string> = {
+                        Strategy: "#22d3ee",
+                        Research: "#a855f7",
+                        Design: "#3b82f6",
+                        Development: "#06b6d4",
+                        Marketing: "#ec4899",
+                        Treasury: "#10b981",
+                        Analytics: "#f97316",
+                        Coordination: "#8b5cf6",
+                        Memory: "#f59e0b",
+                      };
+                      if (ranked.length === 0) {
+                        return (
+                          <div className="py-6 text-center text-[11px] text-white/35">
+                            No agents observed yet.
+                          </div>
+                        );
+                      }
+                      return ranked.map(([agent, count], i) => {
+                        const c = AGENT_COLOR[agent] ?? "#94a3b8";
+                        return (
                           <motion.div
-                            initial={{ width: 0 }}
-                            animate={{ width: `${m.load}%` }}
-                            transition={{ duration: 1 }}
-                            className="h-full rounded-full"
-                            style={{ background: `linear-gradient(90deg, ${m.c}, #a855f7)`, boxShadow: `0 0 8px ${m.c}` }}
-                          />
-                        </div>
-                        <div className="mt-1 flex items-center justify-between text-[10px] text-white/40">
-                          <span>{m.load}% load</span>
-                          <span className="tabular-nums">{m.lat}ms</span>
-                        </div>
-                      </motion.div>
-                    ))}
+                            key={agent}
+                            initial={{ opacity: 0, y: 4 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ delay: i * 0.03 }}
+                            className="rounded-lg border border-white/10 bg-black/30 p-2.5"
+                          >
+                            <div className="flex items-center justify-between text-[11px]">
+                              <span>{agent}</span>
+                              <span className="tabular-nums text-white/60">{count} events</span>
+                            </div>
+                            <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-white/5">
+                              <motion.div
+                                initial={{ width: 0 }}
+                                animate={{ width: `${(count / max) * 100}%` }}
+                                transition={{ duration: 0.6 }}
+                                className="h-full rounded-full"
+                                style={{ background: c, boxShadow: `0 0 8px ${c}` }}
+                              />
+                            </div>
+                          </motion.div>
+                        );
+                      });
+                    })()}
                   </div>
                 </Card>
               </div>
-              ) : null}
             </div>
 
             {/* Orchestration decisions + Event stream visualization */}
