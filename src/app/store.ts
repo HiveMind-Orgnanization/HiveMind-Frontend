@@ -121,11 +121,16 @@ function write(walletPk: string | null, list: Mission[]) {
 }
 
 /** One-time cleanup: nuke the pre-fix global keys (`hm-missions`, `hm-active-mission-id`)
- *  so they can't leak across wallets. Per-wallet variants replace them. */
+ *  so they can't leak across wallets. Per-wallet variants replace them. Also wipes any
+ *  legacy un-scoped workspace snapshots so chat history can't carry across wallets. */
 function purgeLegacyMissionsKey() {
   if (typeof window === "undefined") return;
   try { localStorage.removeItem(LEGACY_KEY); } catch { /* ignore */ }
   try { localStorage.removeItem(LEGACY_ACTIVE_MISSION_KEY); } catch { /* ignore */ }
+  try {
+    // Imported lazily to avoid circular deps in the module graph.
+    void import("../lib/workspace-persistence").then((m) => m.purgeLegacyWorkspaceSnapshots());
+  } catch { /* ignore */ }
 }
 
 /** Union server + local-only missions (same id → prefer server row). */

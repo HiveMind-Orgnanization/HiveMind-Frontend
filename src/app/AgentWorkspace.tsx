@@ -1599,25 +1599,23 @@ function SandpackLivePreview({
   }
 
   // Artifact tree is empty AND the swarm isn't running. Don't let Sandpack fall back to
-  // its built-in "Hello world" template — surface the real situation instead. This happens
-  // when the mission completed but the backend's artifact rows are missing (per-wallet
-  // mismatch, ephemeral storage rotated, or the swarm never reached the persist step).
+  // its built-in "Hello world" template — surface the real situation instead. We DON'T
+  // assume a specific cause (cross-wallet mismatch, storage rotation, persistence failure)
+  // because we can't tell which from the client — just prompt the user to re-run.
   if (artifacts.length === 0 && !swarmRunning) {
     return (
       <div
         ref={containerRef}
-        className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 rounded-xl border border-amber-300/20 bg-gradient-to-b from-[#1a1308]/70 via-[#0a0708]/80 to-[#040810]/70 p-8 text-center"
+        className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 rounded-xl border border-white/[0.08] bg-gradient-to-b from-[#0a1320]/70 via-[#070b14]/80 to-[#040810]/70 p-8 text-center"
       >
-        <div className="relative flex h-14 w-14 items-center justify-center rounded-full border border-amber-300/30 bg-amber-500/10">
-          <span className="text-2xl">⚠</span>
+        <div className="relative flex h-14 w-14 items-center justify-center rounded-full border border-white/15 bg-white/[0.04]">
+          <FolderOpen className="h-6 w-6 text-white/60" aria-hidden />
         </div>
         <div className="space-y-1">
-          <div className="text-sm font-medium text-white/95">No preview artifacts for this mission</div>
+          <div className="text-sm font-medium text-white/95">No preview artifacts to render</div>
           <div className="max-w-md text-xs text-white/55">
-            The chat shows agent activity, but no build artifacts are reachable for the
-            connected wallet. This usually means the mission's files were produced under a
-            different wallet, or the backend's preview cache was rotated. Re-run the swarm
-            from this wallet to regenerate the preview.
+            The mission has no build artifacts available for the connected wallet. Re-run the
+            swarm to regenerate the preview, or pick a different mission from the switcher.
           </div>
         </div>
       </div>
