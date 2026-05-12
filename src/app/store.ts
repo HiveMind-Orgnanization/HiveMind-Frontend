@@ -3,6 +3,7 @@ import { useWallet } from "@solana/wallet-adapter-react";
 import { toast } from "sonner";
 import { apiConfigured, createMissionApi, deleteMissionApi, fetchMissionsApi } from "../lib/api";
 import type { CreateMissionPayload } from "../lib/api";
+import { getSessionWallet, getAuthToken } from "../lib/auth-token";
 
 export type MissionSuccessMetric = { label: string; target: string };
 
@@ -44,6 +45,11 @@ export type Mission = {
   eta: string;
   confidence: number;
   config?: MissionConfig;
+  /** Owner wallet pubkey. Echoed back from the backend (or stamped locally on create)
+   *  so we can defensively filter out cached missions that belong to a different wallet,
+   *  catching any race-condition leak that slipped through the per-wallet localStorage
+   *  key. Missions with no wallet field are treated as "unknown" and preserved. */
+  wallet?: string;
   /** Count of follow-up chat messages the user has sent AFTER the mission completed.
    *  First FOLLOWUP_FREE_QUOTA are free; each one after that requires a paid top-up
    *  (FOLLOWUP_PAID_SOL per message) since the original escrow has already settled. */
@@ -109,7 +115,15 @@ function read(walletPk: string | null): Mission[] {
   try {
     const raw = localStorage.getItem(missionsKey(walletPk));
     if (!raw) return [];
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw) as Mission[];
+    if (!Array.isArray(parsed)) return [];
+    // Defensive filter: drop any mission whose stored wallet attribution doesn't match
+    // the current wallet. This is a SECOND line of defence against the JWT race that
+    // briefly leaked another wallet's missions into this wallet's cache — even if the
+    // race recurs, the leaked rows can't survive a read because they're tagged with
+    // the wrong wallet. Missions with no wallet field are kept (legacy / local-only).
+    if (!walletPk) return parsed;
+    return parsed.filter((m) => !m.wallet || m.wallet === walletPk);
   } catch {
     return [];
   }
@@ -184,8 +198,29 @@ export function useMissions() {
     let cancelled = false;
     const seedIds = new Set(seed.map((s) => s.id));
     const pull = async () => {
+      // CRITICAL: skip the fetch entirely if the JWT we'd send doesn't match the
+      // currently-connected wallet. Without this guard there's a race: when the user
+      // switches wallets, walletPk updates immediately in this effect, but the
+      // useWalletBackendAuth effect that clears + re-signs the JWT runs separately
+      // (it's a different component and a different effect chain). If pull() fires
+      // first, it sends the OLD wallet's JWT, the backend correctly returns the OLD
+      // wallet's missions for that JWT, and we write them into the NEW wallet's
+      // localStorage — a real cross-tenant leak we hit in production.
+      const sessionW = getSessionWallet();
+      if (getAuthToken() && sessionW && sessionW !== walletPk) {
+        return;
+      }
       const remote = await fetchMissionsApi();
       if (cancelled || remote === null) return;
+      // Belt-and-braces: even if the request succeeded, double-check the wallet
+      // hasn't changed mid-flight before we write. This guards a SECOND race —
+      // the user clicks Connect, we fire pull() against the new JWT, but mid-fetch
+      // they switch back to the previous wallet. Without this, we'd write the
+      // in-flight wallet's missions into the now-current wallet's cache.
+      const sessionWNow = getSessionWallet();
+      if (getAuthToken() && sessionWNow && sessionWNow !== walletPk) {
+        return;
+      }
       const local = read(walletPk);
       if (remote.length === 0) {
         // Server has no missions for this wallet — keep only user-created local missions
@@ -218,12 +253,17 @@ export function useMissions() {
 
       let next: Mission;
       if (res.ok) {
-        next = res.mission;
+        // The backend already stamps the row with the caller's wallet; we mirror it
+        // onto the local cached copy so the defensive filter in read() works.
+        next = { ...res.mission, wallet: res.mission.wallet ?? walletPk ?? undefined };
       } else {
         next = {
           ...payload,
           id: localId,
           createdAt: Date.now(),
+          // Tag offline-created missions with the current wallet so they're never
+          // visible to a different wallet on the same browser.
+          wallet: walletPk ?? undefined,
         };
         if (apiConfigured() && res.reason === "unauthorized") {
           toast.warning("Mission saved locally only", {
