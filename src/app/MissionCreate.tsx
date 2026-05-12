@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { toast } from "sonner";
 import { motion, AnimatePresence } from "motion/react";
@@ -233,7 +233,19 @@ export default function MissionCreate() {
     return () => clearInterval(id);
   }, []);
   const [budget, setBudget] = useState(2);
-  const [selected, setSelected] = useState<string[]>(allAgents.filter(a => a.default).map(a => a.name));
+  const [searchParams] = useSearchParams();
+  // Allow Marketplace / AgentDetail to deep-link with ?agent=Coordination so the
+  // arriving user sees that specialist already selected (defaults stay otherwise).
+  const initialSelected = useMemo(() => {
+    const defaults = allAgents.filter((a) => a.default).map((a) => a.name);
+    const requested = searchParams.get("agent");
+    if (requested && allAgents.some((a) => a.name === requested) && !defaults.includes(requested)) {
+      return [...defaults, requested];
+    }
+    return defaults;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const [selected, setSelected] = useState<string[]>(initialSelected);
   const [delegation, setDelegation] = useState(70);
   const [speed, setSpeed] = useState(60);
   const [collab, setCollab] = useState(80);

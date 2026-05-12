@@ -92,6 +92,7 @@ export default function AgentDetail() {
 
   const agent = useMemo(() => {
     if (!apiProf) return fallback;
+    const pk = apiProf.walletPubkey;
     return {
       ...fallback,
       id: apiProf.id,
@@ -102,8 +103,29 @@ export default function AgentDetail() {
       rep: apiProf.reputation,
       missions: apiProf.missionsCompleted,
       success: Math.min(99.9, Math.round((82 + apiProf.trustScore * 0.17) * 10) / 10),
+      walletPubkey: pk ?? null,
+      wallet: pk && pk.length > 12 ? `${pk.slice(0, 4)}…${pk.slice(-4)}` : fallback.wallet,
     };
   }, [apiProf, fallback]);
+
+  const hireHref = `/missions/new?agent=${encodeURIComponent(agent.category)}`;
+  const explorerHref = agent.walletPubkey
+    ? `https://explorer.solana.com/address/${agent.walletPubkey}?cluster=devnet`
+    : null;
+  const onCopyWallet = async () => {
+    if (!agent.walletPubkey) {
+      toast.message("No on-chain wallet for this agent", {
+        description: "Agent runs in registry but has no Solana pubkey bound.",
+      });
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(agent.walletPubkey);
+      toast.success("Wallet address copied");
+    } catch {
+      toast.error("Clipboard unavailable");
+    }
+  };
 
   const [invokeDraft, setInvokeDraft] = useState(
     "How would you coordinate with the other HiveMind agents on this mission?",
@@ -161,14 +183,14 @@ export default function AgentDetail() {
               status={{ label: agent.status === "online" ? "Live · Operational" : agent.status, tone: agent.status === "online" ? "emerald" : "purple" }}
               actions={
                 <div className="flex gap-2">
-                  <Link to="/missions/new" className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white/80 hover:border-cyan-300/30">
+                  <Link to={hireHref} className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white/80 hover:border-cyan-300/30">
                     Add to Mission
                   </Link>
-                  <button className="group relative inline-flex items-center gap-2 overflow-hidden rounded-lg px-4 py-2 text-xs text-black">
+                  <Link to={hireHref} className="group relative inline-flex items-center gap-2 overflow-hidden rounded-lg px-4 py-2 text-xs text-black">
                     <span className="absolute inset-0 bg-gradient-to-r from-cyan-300 to-purple-300" />
                     <Zap className="relative h-3.5 w-3.5" />
                     <span className="relative">Hire {agent.name}</span>
-                  </button>
+                  </Link>
                 </div>
               }
             />
@@ -252,10 +274,31 @@ export default function AgentDetail() {
                     <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 font-mono text-white/60">{agent.model}</span>
                     <span className="rounded-full border border-emerald-300/20 bg-emerald-300/5 px-2 py-0.5 text-emerald-300">{agent.status}</span>
                   </div>
-                  <button className="mt-4 inline-flex items-center gap-1 rounded-md border border-white/10 bg-black/40 px-2.5 py-1 font-mono text-[11px] text-white/55 hover:border-cyan-300/30 hover:text-cyan-200">
-                    {agent.wallet}
-                    <ExternalLink className="h-3 w-3" />
-                  </button>
+                  <div className="mt-4 inline-flex items-center gap-1 rounded-md border border-white/10 bg-black/40 px-1 font-mono text-[11px] text-white/55">
+                    <button
+                      type="button"
+                      onClick={onCopyWallet}
+                      title="Copy wallet address"
+                      className="px-1.5 py-1 hover:text-cyan-200"
+                    >
+                      {agent.wallet}
+                    </button>
+                    {explorerHref ? (
+                      <a
+                        href={explorerHref}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="View on Solana Explorer"
+                        className="border-l border-white/10 px-1.5 py-1 hover:text-cyan-200"
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    ) : (
+                      <span className="border-l border-white/10 px-1.5 py-1 opacity-40">
+                        <ExternalLink className="h-3 w-3" />
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 {/* Headline metrics */}
@@ -317,12 +360,12 @@ export default function AgentDetail() {
                     ))}
                   </div>
 
-                  <button className="group relative mt-5 w-full overflow-hidden rounded-lg px-4 py-2.5 text-sm text-black">
+                  <Link to={hireHref} className="group relative mt-5 block w-full overflow-hidden rounded-lg px-4 py-2.5 text-sm text-black">
                     <span className="absolute inset-0 bg-gradient-to-r from-cyan-300 via-white to-purple-300" />
                     <span className="relative flex items-center justify-center gap-2">
                       <Zap className="h-4 w-4" /> Hire Agent
                     </span>
-                  </button>
+                  </Link>
                 </div>
               </div>
             </Card>
