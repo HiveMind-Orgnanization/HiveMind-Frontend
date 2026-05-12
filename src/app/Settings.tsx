@@ -1,16 +1,25 @@
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
 import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
+import { toast } from "sonner";
 import {
   Settings as SettingsIcon, Wallet, Brain, KeyRound, Shield, Bell, Users,
   Cpu, Sparkles, Zap, Hexagon, Lock, ChevronRight, Save, RefreshCcw,
-  Check, Copy, Eye, EyeOff,
+  Check, Copy, Eye, EyeOff, ExternalLink,
 } from "lucide-react";
 import { Sidebar } from "./components/dashboard/sidebar";
 import { TopNav } from "./components/dashboard/topnav";
 import { PageHeader } from "./components/dashboard/page-header";
 import { Particles } from "./components/particles";
+import { AGENT_MODEL_CATALOG, type AgentModelTier } from "../lib/agent-models";
+import { useWorkspaceSettings, type RouterStrategy } from "../lib/settings-store";
+import { useMissions } from "./store";
+import { useAgents } from "./hooks/useHiveMind";
+
+const TREASURY_RECIPIENT_PUBKEY =
+  import.meta.env.VITE_HM_TREASURY_PUBKEY?.trim() ||
+  "G4o8wSS85JzcpDqTN9RWKaUvFF2a3bT3x2yewyk4xWPc";
 
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return (
@@ -32,32 +41,47 @@ const sections = [
 
 type SectionId = typeof sections[number]["id"];
 
-const modelCatalog = [
-  { id: "claude-4.7-opus",  name: "Claude 4.7 Opus",   strength: "Reasoning · Strategy",        cost: "$$$",  routing: 38, c: "#22d3ee" },
-  { id: "gpt-5",            name: "GPT-5",             strength: "Generation · Multimodal",     cost: "$$$",  routing: 28, c: "#a855f7" },
-  { id: "llama-4-maverick", name: "Llama 4 Maverick",  strength: "Image · Open weights",        cost: "$",    routing: 14, c: "#3b82f6" },
-  { id: "deepseek-v3",      name: "DeepSeek v3",       strength: "Code · Math",                 cost: "$",    routing: 12, c: "#10b981" },
-  { id: "qwen-3-72b",       name: "Qwen 3 72B",        strength: "Long context · Asian langs",  cost: "$$",   routing:  8, c: "#f59e0b" },
-];
+const MODEL_COLOR_BY_TIER: Record<AgentModelTier, string> = {
+  light:     "#10b981",
+  standard:  "#22d3ee",
+  reasoning: "#a855f7",
+  premium:   "#f59e0b",
+};
 
-const permissionRows: { p: string; sub: string; defaults: Record<string, boolean> }[] = [
-  { p: "Delegate to peer agents",      sub: "Spawn subtasks across the swarm",            defaults: { Strategy: true, Research: true, Design: true, Treasury: false, Coordination: true } },
-  { p: "Modify mission scope",         sub: "Edit objective, KPIs, and stage gates",      defaults: { Strategy: true, Research: false, Design: false, Treasury: false, Coordination: true } },
-  { p: "Read shared memory",           sub: "Query qdrant#brand vector store",            defaults: { Strategy: true, Research: true, Design: true, Treasury: true, Coordination: true } },
-  { p: "Write shared memory",          sub: "Upsert embeddings into shared store",        defaults: { Strategy: true, Research: true, Design: true, Treasury: false, Coordination: true } },
-  { p: "Approve payouts",              sub: "Move SOL from escrow to settled",            defaults: { Strategy: false, Research: false, Design: false, Treasury: true, Coordination: false } },
-  { p: "Sign on-chain transactions",   sub: "Settle to Solana mainnet",                   defaults: { Strategy: false, Research: false, Design: false, Treasury: true, Coordination: false } },
+const TIER_LABEL: Record<AgentModelTier, string> = {
+  light:     "Light",
+  standard:  "Standard",
+  reasoning: "Reasoning",
+  premium:   "Premium",
+};
+
+/** Only light + standard models actually route in v1 — reasoning + premium are
+ *  surfaced in the catalog as "Coming soon" so users see the multi-provider
+ *  story without us advertising routing we don't perform. */
+const ENABLED_TIERS: ReadonlySet<AgentModelTier> = new Set(["light", "standard"]);
+
+// v1 only ships fixed orchestration rules — fine-grained agent permissions
+// land with the multi-user release. Surface the matrix so users understand
+// what's coming, but disable the toggles.
+const permissionRows = [
+  { p: "Delegate to peer agents",      sub: "Spawn subtasks across the swarm",       defaults: { Strategy: true, Research: true, Design: true, Treasury: false, Coordination: true } },
+  { p: "Modify mission scope",         sub: "Edit objective, KPIs, and stage gates", defaults: { Strategy: true, Research: false, Design: false, Treasury: false, Coordination: true } },
+  { p: "Read shared memory",           sub: "Query qdrant#brand vector store",       defaults: { Strategy: true, Research: true, Design: true, Treasury: true, Coordination: true } },
+  { p: "Write shared memory",          sub: "Upsert embeddings into shared store",   defaults: { Strategy: true, Research: true, Design: true, Treasury: false, Coordination: true } },
+  { p: "Approve payouts",              sub: "Move SOL from escrow to settled",       defaults: { Strategy: false, Research: false, Design: false, Treasury: true, Coordination: false } },
+  { p: "Sign on-chain transactions",   sub: "Settle to Solana devnet",               defaults: { Strategy: false, Research: false, Design: false, Treasury: true, Coordination: false } },
 ];
 
 const agentList = ["Strategy", "Research", "Design", "Treasury", "Coordination"];
 
-function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
+function Toggle({ on, onClick, disabled = false }: { on: boolean; onClick: () => void; disabled?: boolean }) {
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
       className={`relative h-5 w-9 rounded-full border transition ${
         on ? "border-cyan-300/50 bg-cyan-300/20" : "border-white/10 bg-white/[0.03]"
-      }`}
+      } ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
     >
       <motion.span
         className="absolute top-0.5 h-4 w-4 rounded-full"
@@ -72,43 +96,111 @@ function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
   );
 }
 
+function PrefRow({
+  label, desc, value, onChange,
+}: {
+  label: string; desc: string; value: boolean; onChange: (next: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between rounded-xl border border-white/10 bg-black/30 px-4 py-3">
+      <div className="min-w-0 pr-3">
+        <div className="text-sm text-white/85">{label}</div>
+        <div className="text-[11px] text-white/45">{desc}</div>
+      </div>
+      <Toggle on={value} onClick={() => onChange(!value)} />
+    </div>
+  );
+}
+
 export default function Settings() {
   const { publicKey, connected } = useWallet();
   const { connection } = useConnection();
+  const walletAddress = publicKey?.toBase58() ?? null;
+  const walletShort = walletAddress
+    ? `${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}`
+    : "—";
+
+  const { missions } = useMissions();
+  const { agents } = useAgents();
+  const { settings, update, stampSave } = useWorkspaceSettings(walletAddress);
+
   const [solBalance, setSolBalance] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
+  const [revealKeys, setRevealKeys] = useState(false);
+  const [section, setSection] = useState<SectionId>("wallet");
 
   useEffect(() => {
     if (!publicKey) { setSolBalance(null); return; }
-    connection.getBalance(publicKey).then((lamports) => setSolBalance(lamports / LAMPORTS_PER_SOL)).catch(() => null);
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const lamports = await connection.getBalance(publicKey);
+        if (!cancelled) setSolBalance(lamports / LAMPORTS_PER_SOL);
+      } catch {
+        /* leave at null */
+      }
+    };
+    tick();
+    const id = window.setInterval(tick, 15_000);
+    return () => { cancelled = true; window.clearInterval(id); };
   }, [publicKey, connection]);
-
-  const walletAddress = publicKey?.toBase58() ?? null;
-  const walletShort = walletAddress ? `${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}` : "7xKn4PqR2vM…42aF";
 
   const copyAddress = () => {
     if (walletAddress) {
-      navigator.clipboard.writeText(walletAddress).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
+      navigator.clipboard.writeText(walletAddress).then(() => {
+        setCopied(true);
+        toast.success("Wallet address copied");
+        setTimeout(() => setCopied(false), 1500);
+      });
     }
   };
 
-  const [section, setSection] = useState<SectionId>("models");
-  const [router, setRouter] = useState<"cost" | "balance" | "quality">("balance");
-  const [activeModels, setActiveModels] = useState<Record<string, boolean>>({
-    "claude-4.7-opus": true, "gpt-5": true, "llama-4-maverick": true, "deepseek-v3": true, "qwen-3-72b": true,
-  });
-  const [perms, setPerms] = useState(() =>
-    permissionRows.map((r) => ({ ...r, granted: { ...r.defaults } as Record<string, boolean> }))
-  );
-  const [reveal, setReveal] = useState(false);
-  const [savedAt, setSavedAt] = useState<string | null>(null);
+  // Resolve effective enabled state per model: stored override OR tier default.
+  const modelEnabled = (id: string, tier: AgentModelTier): boolean => {
+    if (id in settings.models) return settings.models[id];
+    return ENABLED_TIERS.has(tier);
+  };
+  const toggleModel = (id: string, tier: AgentModelTier) => {
+    if (!ENABLED_TIERS.has(tier)) return; // premium/reasoning locked
+    const current = modelEnabled(id, tier);
+    update((prev) => ({ ...prev, models: { ...prev.models, [id]: !current } }));
+  };
 
-  const toggleModel = (id: string) => setActiveModels((p) => ({ ...p, [id]: !p[id] }));
-  const togglePerm = (i: number, agent: string) =>
-    setPerms((rows) =>
-      rows.map((r, idx) => (idx === i ? { ...r, granted: { ...r.granted, [agent]: !r.granted[agent] } } : r))
-    );
-  const save = () => setSavedAt(new Date().toLocaleTimeString());
+  const setRouterStrategy = (r: RouterStrategy) =>
+    update((prev) => ({ ...prev, routerStrategy: r }));
+
+  const updatePref = (key: string, value: boolean) =>
+    update((prev) => ({ ...prev, preferences: { ...prev.preferences, [key]: value } }));
+
+  const updateNotif = (key: string, value: boolean) =>
+    update((prev) => ({ ...prev, notifications: { ...prev.notifications, [key]: value } }));
+
+  const updateTreasury = (key: string, value: boolean) =>
+    update((prev) => ({ ...prev, treasury: { ...prev.treasury, [key]: value } }));
+
+  const save = () => {
+    stampSave();
+    toast.success("Settings saved", { description: "Preferences are stored per-wallet in this browser." });
+  };
+
+  const enabledModelCount = useMemo(() => {
+    return AGENT_MODEL_CATALOG.filter((m) => modelEnabled(m.id, m.tier)).length;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.models]);
+
+  // Counts for the workspace summary card — driven by real registry + user state.
+  const missionCount = missions.length;
+  const agentCount = agents.length;
+  const memoryCount = missions.reduce((s, m) => s + (m.agents?.length ?? 0), 0); // a stand-in proxy
+
+  const savedAtLabel = useMemo(() => {
+    if (!settings.savedAt) return null;
+    return new Date(settings.savedAt).toLocaleTimeString();
+  }, [settings.savedAt]);
+
+  const headerStatusLabel = walletAddress
+    ? `Workspace · ${walletShort}`
+    : "Workspace · not connected";
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[#04060c] text-white antialiased">
@@ -131,12 +223,12 @@ export default function Settings() {
               title="Settings"
               subtitle="Workspace preferences, models, permissions, and orchestrator configuration."
               crumbs={[{ label: "Settings" }]}
-              status={{ label: "Workspace · Astra", tone: "purple" }}
+              status={{ label: headerStatusLabel, tone: "purple" }}
               actions={
                 <div className="flex items-center gap-2">
-                  {savedAt && (
+                  {savedAtLabel && (
                     <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-300/30 bg-emerald-300/10 px-2.5 py-1.5 text-[11px] text-emerald-200">
-                      <Check className="h-3 w-3" /> saved {savedAt}
+                      <Check className="h-3 w-3" /> saved {savedAtLabel}
                     </span>
                   )}
                   <button
@@ -185,16 +277,23 @@ export default function Settings() {
                   })}
                 </div>
 
-                {/* Workspace summary */}
+                {/* Workspace summary — derived from real registry + user state */}
                 <div className="m-3 rounded-xl border border-white/10 bg-gradient-to-br from-cyan-500/10 to-purple-500/10 p-4">
                   <div className="text-[10px] uppercase tracking-[0.3em] text-cyan-300">workspace</div>
-                  <div className="mt-2 text-sm">Astra · Personal</div>
-                  <div className="mt-1 text-[11px] text-white/55">5 agents · 12 missions · plan tier-3</div>
+                  <div className="mt-2 truncate font-mono text-sm">{walletShort}</div>
+                  <div className="mt-1 text-[11px] text-white/55">
+                    {agentCount > 0 ? `${agentCount} agents` : "registry offline"} ·{" "}
+                    {missionCount > 0 ? `${missionCount} missions` : "no missions"} · devnet
+                  </div>
                   <div className="mt-3 grid grid-cols-3 gap-1 text-center">
-                    {["Models", "Mem", "Perms"].map((k, i) => (
-                      <div key={k} className="rounded-md bg-black/40 p-1.5">
-                        <div className="text-[9px] text-white/40">{k}</div>
-                        <div className="text-[11px] text-cyan-200 tabular-nums">{[5, 248, 6][i]}</div>
+                    {[
+                      { k: "Models", v: enabledModelCount },
+                      { k: "Mem",    v: memoryCount },
+                      { k: "Perms",  v: "v2" },
+                    ].map((x) => (
+                      <div key={x.k} className="rounded-md bg-black/40 p-1.5">
+                        <div className="text-[9px] text-white/40">{x.k}</div>
+                        <div className="text-[11px] text-cyan-200 tabular-nums">{x.v}</div>
                       </div>
                     ))}
                   </div>
@@ -211,66 +310,73 @@ export default function Settings() {
                           <Brain className="h-4 w-4 text-purple-300" />
                           Model Configuration
                         </div>
-                        <span className="text-[10px] uppercase tracking-[0.25em] text-purple-300">{Object.values(activeModels).filter(Boolean).length} / 5 enabled</span>
+                        <span className="text-[10px] uppercase tracking-[0.25em] text-purple-300">
+                          {enabledModelCount} / {AGENT_MODEL_CATALOG.length} routed
+                        </span>
+                      </div>
+
+                      <div className="px-5 pt-4 text-[11px] text-white/45">
+                        v1 routes through light + standard tiers. Reasoning + premium models are listed for transparency — they unlock with the v2 routing release.
                       </div>
 
                       <div className="grid gap-3 p-4 md:grid-cols-2">
-                        {modelCatalog.map((m, i) => {
-                          const enabled = activeModels[m.id];
+                        {AGENT_MODEL_CATALOG.map((m, i) => {
+                          const tierEnabled = ENABLED_TIERS.has(m.tier);
+                          const enabled = modelEnabled(m.id, m.tier);
+                          const c = MODEL_COLOR_BY_TIER[m.tier];
                           return (
                             <motion.div
                               key={m.id}
                               initial={{ opacity: 0, y: 6 }}
                               animate={{ opacity: 1, y: 0 }}
-                              transition={{ delay: i * 0.04 }}
-                              className="relative overflow-hidden rounded-xl border border-white/10 bg-black/30 p-4"
+                              transition={{ delay: i * 0.02 }}
+                              className={`relative overflow-hidden rounded-xl border border-white/10 bg-black/30 p-4 ${tierEnabled ? "" : "opacity-75"}`}
                             >
-                              <div className="absolute -right-8 -top-8 h-24 w-24 rounded-full opacity-30 blur-2xl" style={{ background: m.c }} />
+                              <div className="absolute -right-8 -top-8 h-24 w-24 rounded-full opacity-30 blur-2xl" style={{ background: c }} />
                               <div className="relative flex items-start justify-between gap-3">
                                 <div className="flex min-w-0 items-center gap-3">
                                   <div
-                                    className="h-10 w-10 rounded-xl"
-                                    style={{ background: `linear-gradient(135deg, ${m.c}55, ${m.c}11)`, boxShadow: `0 0 14px ${m.c}55` }}
+                                    className="h-10 w-10 shrink-0 rounded-xl"
+                                    style={{ background: `linear-gradient(135deg, ${c}55, ${c}11)`, boxShadow: `0 0 14px ${c}55` }}
                                   />
                                   <div className="min-w-0">
                                     <div className="flex items-center gap-2 text-sm">
-                                      {m.name}
-                                      {enabled && (
+                                      <span className="truncate">{m.label}</span>
+                                      {tierEnabled && enabled && (
                                         <span className="inline-flex items-center gap-1 text-[10px] text-emerald-300">
                                           <span className="h-1.5 w-1.5 rounded-full bg-emerald-300 shadow-[0_0_8px_rgba(16,185,129,0.9)]" />
                                           live
                                         </span>
                                       )}
                                     </div>
-                                    <div className="text-[11px] text-white/50">{m.strength}</div>
+                                    <div className="text-[11px] text-white/50">{m.desc}</div>
                                     <div className="mt-0.5 font-mono text-[10px] text-white/35">{m.id}</div>
                                   </div>
                                 </div>
-                                <Toggle on={enabled} onClick={() => toggleModel(m.id)} />
+                                {tierEnabled ? (
+                                  <Toggle on={enabled} onClick={() => toggleModel(m.id, m.tier)} />
+                                ) : (
+                                  <span className="rounded-full border border-amber-300/30 bg-amber-300/10 px-2 py-0.5 text-[9px] uppercase tracking-[0.25em] text-amber-200">
+                                    Soon
+                                  </span>
+                                )}
                               </div>
 
                               <div className="relative mt-3 grid grid-cols-3 gap-2 text-[10px]">
                                 <div className="rounded-md bg-white/[0.03] px-2 py-1.5">
-                                  <div className="text-white/40">Cost</div>
-                                  <div className="text-white/85">{m.cost}</div>
+                                  <div className="text-white/40">Tier</div>
+                                  <div className="text-white/85">{TIER_LABEL[m.tier]}</div>
                                 </div>
                                 <div className="rounded-md bg-white/[0.03] px-2 py-1.5">
-                                  <div className="text-white/40">Routing</div>
-                                  <div className="tabular-nums text-white/85">{m.routing}%</div>
+                                  <div className="text-white/40">SOL mult</div>
+                                  <div className="tabular-nums text-white/85">{m.solMult.toFixed(2)}×</div>
                                 </div>
                                 <div className="rounded-md bg-white/[0.03] px-2 py-1.5">
-                                  <div className="text-white/40">Tokens</div>
-                                  <div className="tabular-nums text-white/85">∞</div>
+                                  <div className="text-white/40">Status</div>
+                                  <div className="tabular-nums text-white/85">
+                                    {tierEnabled ? (enabled ? "routed" : "muted") : "v2"}
+                                  </div>
                                 </div>
-                              </div>
-
-                              <div className="relative mt-3 h-1.5 w-full overflow-hidden rounded-full bg-white/5">
-                                <motion.div
-                                  initial={{ width: 0 }} animate={{ width: `${m.routing}%` }}
-                                  transition={{ duration: 1 }}
-                                  className="h-full rounded-full"
-                                  style={{ background: `linear-gradient(90deg, ${m.c}, #a855f7)`, boxShadow: `0 0 8px ${m.c}` }}
-                                />
                               </div>
                             </motion.div>
                           );
@@ -288,15 +394,15 @@ export default function Settings() {
                       </div>
                       <div className="grid gap-3 p-4 md:grid-cols-3">
                         {([
-                          { id: "cost",    label: "Cost-Optimized",  sub: "Cheapest viable model",   c: "#10b981" },
-                          { id: "balance", label: "Balanced",         sub: "Quality vs cost trade-off",c: "#22d3ee" },
-                          { id: "quality", label: "Max Quality",      sub: "Always pick best model",   c: "#a855f7" },
+                          { id: "cost",    label: "Cost-Optimized", sub: "Cheapest viable model",     c: "#10b981" },
+                          { id: "balance", label: "Balanced",        sub: "Quality vs cost trade-off", c: "#22d3ee" },
+                          { id: "quality", label: "Max Quality",     sub: "Always pick best model",    c: "#a855f7" },
                         ] as const).map((r) => {
-                          const active = router === r.id;
+                          const active = settings.routerStrategy === r.id;
                           return (
                             <button
                               key={r.id}
-                              onClick={() => setRouter(r.id)}
+                              onClick={() => setRouterStrategy(r.id)}
                               className={`relative overflow-hidden rounded-xl border p-4 text-left transition ${
                                 active ? "border-cyan-300/40 bg-cyan-300/5" : "border-white/10 bg-black/30 hover:border-white/20"
                               }`}
@@ -344,7 +450,7 @@ export default function Settings() {
                           </tr>
                         </thead>
                         <tbody>
-                          {perms.map((row, i) => (
+                          {permissionRows.map((row) => (
                             <tr key={row.p} className="border-b border-white/5 last:border-b-0 hover:bg-white/[0.02]">
                               <td className="px-5 py-3">
                                 <div className="text-sm text-white/85">{row.p}</div>
@@ -353,7 +459,7 @@ export default function Settings() {
                               {agentList.map((a) => (
                                 <td key={a} className="px-3 py-3 text-center">
                                   <div className="flex justify-center">
-                                    <Toggle on={!!row.granted[a]} onClick={() => togglePerm(i, a)} />
+                                    <Toggle on={!!row.defaults[a as keyof typeof row.defaults]} onClick={() => undefined} disabled />
                                   </div>
                                 </td>
                               ))}
@@ -373,7 +479,7 @@ export default function Settings() {
                           <Wallet className="h-4 w-4 text-emerald-300" />
                           Connected Wallet
                         </div>
-                        <span className="text-[10px] uppercase tracking-[0.25em] text-emerald-300">Solana mainnet</span>
+                        <span className="text-[10px] uppercase tracking-[0.25em] text-emerald-300">Solana devnet</span>
                       </div>
                       <div className="p-5">
                         <div className="flex items-center gap-3">
@@ -381,9 +487,20 @@ export default function Settings() {
                           <div className="min-w-0">
                             <div className="flex items-center gap-2 font-mono text-sm">
                               {walletShort}
-                              <button onClick={copyAddress} className="rounded-md border border-white/10 bg-white/[0.03] p-1 hover:border-cyan-300/30">
+                              <button onClick={copyAddress} className="rounded-md border border-white/10 bg-white/[0.03] p-1 hover:border-cyan-300/30" title="Copy address" disabled={!walletAddress}>
                                 {copied ? <Check className="h-3 w-3 text-emerald-300" /> : <Copy className="h-3 w-3 text-white/55" />}
                               </button>
+                              {walletAddress && (
+                                <a
+                                  href={`https://explorer.solana.com/address/${walletAddress}?cluster=devnet`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  title="View on Solana Explorer"
+                                  className="rounded-md border border-white/10 bg-white/[0.03] p-1 hover:border-cyan-300/30 hover:text-cyan-200"
+                                >
+                                  <ExternalLink className="h-3 w-3 text-white/55" />
+                                </a>
+                              )}
                             </div>
                             <div className="mt-0.5 text-[11px] text-white/50">
                               {connected ? "Connected · primary signer" : "Not connected — connect wallet to continue"}
@@ -391,23 +508,27 @@ export default function Settings() {
                           </div>
                           <div className="ml-auto flex items-baseline gap-1.5">
                             <span className="text-2xl tabular-nums">
-                              {solBalance !== null ? solBalance.toFixed(2) : connected ? "…" : "—"}
+                              {solBalance !== null ? solBalance.toFixed(4) : connected ? "…" : "—"}
                             </span>
                             <span className="text-sm text-white/55">SOL</span>
                           </div>
                         </div>
 
-                        <div className="mt-4 grid grid-cols-3 gap-2 text-[11px]">
-                          {[
-                            { l: "Auto top-up",     v: "off",     c: "#a855f7" },
-                            { l: "Spending limit",  v: "12 SOL/day", c: "#f59e0b" },
-                            { l: "Network fee",     v: "auto",    c: "#22d3ee" },
-                          ].map((x) => (
-                            <div key={x.l} className="rounded-lg border border-white/10 bg-black/30 p-3">
-                              <div className="text-[10px] uppercase tracking-widest text-white/40">{x.l}</div>
-                              <div className="mt-1" style={{ color: x.c }}>{x.v}</div>
+                        <div className="mt-4 grid grid-cols-1 gap-2 text-[11px] md:grid-cols-3">
+                          <div className="rounded-lg border border-white/10 bg-black/30 p-3">
+                            <div className="text-[10px] uppercase tracking-widest text-white/40">Network</div>
+                            <div className="mt-1 text-emerald-300">Solana devnet</div>
+                          </div>
+                          <div className="rounded-lg border border-white/10 bg-black/30 p-3">
+                            <div className="text-[10px] uppercase tracking-widest text-white/40">RPC endpoint</div>
+                            <div className="mt-1 truncate font-mono text-cyan-200">
+                              {connection.rpcEndpoint.replace(/^https?:\/\//, "")}
                             </div>
-                          ))}
+                          </div>
+                          <div className="rounded-lg border border-white/10 bg-black/30 p-3">
+                            <div className="text-[10px] uppercase tracking-widest text-white/40">Missions on this wallet</div>
+                            <div className="mt-1 tabular-nums text-white/85">{missionCount}</div>
+                          </div>
                         </div>
                       </div>
                     </Card>
@@ -416,18 +537,56 @@ export default function Settings() {
                       <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
                         <div className="flex items-center gap-2 text-sm">
                           <Lock className="h-4 w-4 text-cyan-300" />
-                          Treasury Controls
+                          HiveMind Treasury
                         </div>
+                        <span className="text-[10px] uppercase tracking-[0.25em] text-cyan-300">recipient pubkey</span>
                       </div>
                       <div className="space-y-3 p-5">
-                        {[
-                          { l: "Auto-approve payouts under 1 SOL",     desc: "Skip manual review for low-value settlements", on: true },
-                          { l: "Require multisig for amounts > 50 SOL", desc: "Treasury · 3/5 quorum",                       on: true },
-                          { l: "Lock escrow on mission start",          desc: "Hold mission budget until completion",         on: false },
-                          { l: "Settle automatically on approval",      desc: "Push transactions when verifiers sign",        on: true },
-                        ].map((r) => (
-                          <SettingRow key={r.l} label={r.l} desc={r.desc} initial={r.on} />
-                        ))}
+                        <div className="rounded-xl border border-white/10 bg-black/30 p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="text-[10px] uppercase tracking-widest text-white/40">Treasury address</div>
+                            <a
+                              href={`https://explorer.solana.com/address/${TREASURY_RECIPIENT_PUBKEY}?cluster=devnet`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-[11px] text-cyan-300 hover:underline"
+                            >
+                              View on Explorer <ExternalLink className="h-3 w-3" />
+                            </a>
+                          </div>
+                          <div className="mt-2 break-all font-mono text-[12px] text-white/80">
+                            {TREASURY_RECIPIENT_PUBKEY}
+                          </div>
+                          <div className="mt-2 text-[11px] text-white/45">
+                            Deposits + agent payouts route through this pubkey. Override via{" "}
+                            <span className="font-mono text-white/70">VITE_HM_TREASURY_PUBKEY</span> in production.
+                          </div>
+                        </div>
+
+                        <PrefRow
+                          label="Auto-approve payouts under 1 SOL"
+                          desc="Skip manual review for low-value settlements"
+                          value={settings.treasury.autoApproveSmallPayouts}
+                          onChange={(v) => updateTreasury("autoApproveSmallPayouts", v)}
+                        />
+                        <PrefRow
+                          label="Require multisig for amounts > 50 SOL"
+                          desc="3/5 quorum gate on large settlements (v2 enforcement)"
+                          value={settings.treasury.multisigOverThreshold}
+                          onChange={(v) => updateTreasury("multisigOverThreshold", v)}
+                        />
+                        <PrefRow
+                          label="Lock escrow on mission start"
+                          desc="Hold mission budget until completion"
+                          value={settings.treasury.lockEscrowOnStart}
+                          onChange={(v) => updateTreasury("lockEscrowOnStart", v)}
+                        />
+                        <PrefRow
+                          label="Settle automatically on approval"
+                          desc="Push transactions when verifiers sign"
+                          value={settings.treasury.autoSettleOnApproval}
+                          onChange={(v) => updateTreasury("autoSettleOnApproval", v)}
+                        />
                       </div>
                     </Card>
                   </div>
@@ -443,11 +602,36 @@ export default function Settings() {
                         </div>
                       </div>
                       <div className="space-y-3 p-5">
-                        <SettingRow label="Stream chain-of-thought to console" desc="Show every reasoning step in Live Console" initial={true} />
-                        <SettingRow label="Auto-pause on low confidence"      desc="Halt mission if confidence < 0.65"           initial={true} />
-                        <SettingRow label="Memory recall in every reasoning"  desc="Always include top-k vector matches"         initial={true} />
-                        <SettingRow label="Shadow mode (no on-chain effects)" desc="Run agents without committing transactions"  initial={false} />
-                        <SettingRow label="Human approval gates"              desc="Require human sign-off for high-impact actions" initial={false} />
+                        <PrefRow
+                          label="Stream chain-of-thought to console"
+                          desc="Show every reasoning step in Live Console"
+                          value={settings.preferences.streamReasoning}
+                          onChange={(v) => updatePref("streamReasoning", v)}
+                        />
+                        <PrefRow
+                          label="Auto-pause on low confidence"
+                          desc="Halt mission if confidence < 0.65"
+                          value={settings.preferences.autoPauseLowConfidence}
+                          onChange={(v) => updatePref("autoPauseLowConfidence", v)}
+                        />
+                        <PrefRow
+                          label="Memory recall in every reasoning"
+                          desc="Always include top-k vector matches"
+                          value={settings.preferences.memoryRecallAlways}
+                          onChange={(v) => updatePref("memoryRecallAlways", v)}
+                        />
+                        <PrefRow
+                          label="Shadow mode (no on-chain effects)"
+                          desc="Run agents without committing transactions"
+                          value={settings.preferences.shadowMode}
+                          onChange={(v) => updatePref("shadowMode", v)}
+                        />
+                        <PrefRow
+                          label="Human approval gates"
+                          desc="Require human sign-off for high-impact actions"
+                          value={settings.preferences.humanApprovalGates}
+                          onChange={(v) => updatePref("humanApprovalGates", v)}
+                        />
                       </div>
                     </Card>
 
@@ -460,14 +644,15 @@ export default function Settings() {
                       </div>
                       <div className="grid gap-3 p-5 md:grid-cols-2">
                         {[
-                          { l: "Default temperature",   v: "0.7",   c: "#22d3ee" },
-                          { l: "Top-K memory recall",   v: "8",     c: "#a855f7" },
-                          { l: "Mission timeout",       v: "12h",   c: "#f59e0b" },
-                          { l: "Max parallel agents",   v: "12",    c: "#10b981" },
+                          { l: "Default temperature",   v: "0.7",   c: "#22d3ee", note: "agent-runtime baseline" },
+                          { l: "Top-K memory recall",   v: "8",     c: "#a855f7", note: "vector store fanout" },
+                          { l: "Mission timeout",       v: "12h",   c: "#f59e0b", note: "auto-pause cutoff" },
+                          { l: "Max parallel agents",   v: "12",    c: "#10b981", note: "swarm concurrency cap" },
                         ].map((x) => (
                           <div key={x.l} className="rounded-xl border border-white/10 bg-black/30 p-4">
                             <div className="text-[10px] uppercase tracking-widest text-white/40">{x.l}</div>
                             <div className="mt-1 text-2xl tabular-nums" style={{ color: x.c }}>{x.v}</div>
+                            <div className="mt-1 text-[10px] text-white/40">{x.note} · v2 will expose tuning</div>
                           </div>
                         ))}
                       </div>
@@ -510,10 +695,10 @@ export default function Settings() {
                           <div className="col-span-5 flex items-center gap-2 rounded-md border border-white/10 bg-black/40 px-3 py-1.5">
                             <Hexagon className="h-3 w-3 text-white/40" />
                             <span className="font-mono text-[11px]">
-                              {reveal ? k.v : k.v.slice(0, 4) + "•".repeat(k.v.length - 8) + k.v.slice(-4)}
+                              {revealKeys ? k.v : k.v.slice(0, 4) + "•".repeat(k.v.length - 8) + k.v.slice(-4)}
                             </span>
-                            <button onClick={() => setReveal((v) => !v)} className="ml-auto text-white/40 hover:text-white">
-                              {reveal ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                            <button onClick={() => setRevealKeys((v) => !v)} className="ml-auto text-white/40 hover:text-white">
+                              {revealKeys ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
                             </button>
                             <button className="text-white/40 hover:text-cyan-300">
                               <Copy className="h-3 w-3" />
@@ -540,16 +725,36 @@ export default function Settings() {
                       </div>
                     </div>
                     <div className="space-y-3 p-5">
-                      {[
-                        { l: "Mission completion",    desc: "When any mission reaches done state",       on: true },
-                        { l: "Failed workflows",      desc: "Errors and retries from any agent",         on: true },
-                        { l: "Payment approvals",     desc: "When treasury awaits sign-off",             on: true },
-                        { l: "Delegation requests",   desc: "Cross-agent delegation events",             on: false },
-                        { l: "Governance updates",    desc: "Open proposals, votes, and dispute events", on: true },
-                        { l: "Security alerts",       desc: "Slashing events and anomalies",             on: true },
-                      ].map((r) => (
-                        <SettingRow key={r.l} label={r.l} desc={r.desc} initial={r.on} />
-                      ))}
+                      <PrefRow
+                        label="Mission completion"
+                        desc="When any mission reaches done state"
+                        value={settings.notifications.missionCompletion}
+                        onChange={(v) => updateNotif("missionCompletion", v)}
+                      />
+                      <PrefRow
+                        label="Failed workflows"
+                        desc="Errors and retries from any agent"
+                        value={settings.notifications.failedWorkflows}
+                        onChange={(v) => updateNotif("failedWorkflows", v)}
+                      />
+                      <PrefRow
+                        label="Payment approvals"
+                        desc="When treasury awaits sign-off"
+                        value={settings.notifications.paymentApprovals}
+                        onChange={(v) => updateNotif("paymentApprovals", v)}
+                      />
+                      <PrefRow
+                        label="Delegation requests"
+                        desc="Cross-agent delegation events"
+                        value={settings.notifications.delegationRequests}
+                        onChange={(v) => updateNotif("delegationRequests", v)}
+                      />
+                      <PrefRow
+                        label="Security alerts"
+                        desc="Anomalies and signing failures"
+                        value={settings.notifications.securityAlerts}
+                        onChange={(v) => updateNotif("securityAlerts", v)}
+                      />
                     </div>
                   </Card>
                 )}
@@ -604,19 +809,6 @@ export default function Settings() {
           </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-function SettingRow({ label, desc, initial }: { label: string; desc: string; initial: boolean }) {
-  const [on, setOn] = useState(initial);
-  return (
-    <div className="flex items-center justify-between rounded-xl border border-white/10 bg-black/30 px-4 py-3">
-      <div className="min-w-0 pr-3">
-        <div className="text-sm text-white/85">{label}</div>
-        <div className="text-[11px] text-white/45">{desc}</div>
-      </div>
-      <Toggle on={on} onClick={() => setOn((v) => !v)} />
     </div>
   );
 }
