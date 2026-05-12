@@ -15,6 +15,17 @@ import { useCallback, useEffect, useState } from "react";
 
 export type RouterStrategy = "cost" | "balance" | "quality";
 
+export type AgentDefaults = {
+  /** LLM temperature passed to invoke calls (0.0 deterministic → 2.0 wild). */
+  temperature: number;
+  /** Top-K vector store fanout for memory recall. */
+  topKMemory: number;
+  /** Mission auto-pause cutoff in hours. */
+  missionTimeoutHours: number;
+  /** Max parallel agent invocations during a swarm. */
+  maxParallelAgents: number;
+};
+
 export type WorkspaceSettings = {
   /** Per-model enabled flags keyed by model id (see lib/agent-models.ts catalog) */
   models: Record<string, boolean>;
@@ -26,8 +37,17 @@ export type WorkspaceSettings = {
   notifications: Record<string, boolean>;
   /** Treasury automation toggles */
   treasury: Record<string, boolean>;
+  /** Numeric defaults for the agent runtime (temperature, top-k, etc.) */
+  defaults: AgentDefaults;
   /** Last-saved timestamp (ms since epoch) */
   savedAt: number | null;
+};
+
+export const DEFAULT_AGENT_DEFAULTS: AgentDefaults = {
+  temperature: 0.7,
+  topKMemory: 8,
+  missionTimeoutHours: 12,
+  maxParallelAgents: 12,
 };
 
 export const DEFAULT_SETTINGS: WorkspaceSettings = {
@@ -53,6 +73,7 @@ export const DEFAULT_SETTINGS: WorkspaceSettings = {
     lockEscrowOnStart: false,
     autoSettleOnApproval: true,
   },
+  defaults: DEFAULT_AGENT_DEFAULTS,
   savedAt: null,
 };
 
@@ -74,10 +95,23 @@ export function readSettings(walletPk: string | null): WorkspaceSettings {
       preferences:     { ...DEFAULT_SETTINGS.preferences,   ...(parsed.preferences   ?? {}) },
       notifications:   { ...DEFAULT_SETTINGS.notifications, ...(parsed.notifications ?? {}) },
       treasury:        { ...DEFAULT_SETTINGS.treasury,      ...(parsed.treasury      ?? {}) },
+      defaults:        { ...DEFAULT_SETTINGS.defaults,      ...(parsed.defaults      ?? {}) },
       savedAt:         parsed.savedAt ?? null,
     };
   } catch {
     return DEFAULT_SETTINGS;
+  }
+}
+
+/** Wipe persisted settings for the wallet and broadcast a change event so
+ *  the Settings page (and any other reader) re-renders with the defaults. */
+export function resetSettings(walletPk: string | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.removeItem(storageKey(walletPk));
+    window.dispatchEvent(new CustomEvent(CHANGE_EVENT, { detail: { walletPk } }));
+  } catch {
+    /* ignore */
   }
 }
 

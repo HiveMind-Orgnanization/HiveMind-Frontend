@@ -6,14 +6,20 @@ import { toast } from "sonner";
 import {
   Settings as SettingsIcon, Wallet, Brain, KeyRound, Shield, Bell, Users,
   Cpu, Sparkles, Zap, Hexagon, Lock, ChevronRight, Save,
-  Check, Copy, Eye, EyeOff, ExternalLink, X,
+  Check, Copy, Eye, EyeOff, ExternalLink, X, RotateCcw,
 } from "lucide-react";
 import { Sidebar } from "./components/dashboard/sidebar";
 import { TopNav } from "./components/dashboard/topnav";
 import { PageHeader } from "./components/dashboard/page-header";
 import { Particles } from "./components/particles";
 import { AGENT_MODEL_CATALOG, type AgentModelTier } from "../lib/agent-models";
-import { useWorkspaceSettings, type RouterStrategy } from "../lib/settings-store";
+import {
+  useWorkspaceSettings,
+  resetSettings,
+  DEFAULT_AGENT_DEFAULTS,
+  type RouterStrategy,
+  type AgentDefaults,
+} from "../lib/settings-store";
 import { useMissions } from "./store";
 import { useAgents } from "./hooks/useHiveMind";
 
@@ -216,6 +222,17 @@ export default function Settings() {
   const updateTreasury = (key: string, value: boolean) =>
     update((prev) => ({ ...prev, treasury: { ...prev.treasury, [key]: value } }));
 
+  const updateDefaults = (patch: Partial<AgentDefaults>) =>
+    update((prev) => ({ ...prev, defaults: { ...prev.defaults, ...patch } }));
+
+  const onResetSettings = () => {
+    if (!window.confirm("Reset every Settings field to defaults? Models, toggles, defaults — all per-wallet preferences will be wiped.")) {
+      return;
+    }
+    resetSettings(walletAddress);
+    toast.success("Settings reset to defaults");
+  };
+
   const save = () => {
     stampSave();
     toast.success("Settings saved", { description: "Preferences are stored per-wallet in this browser." });
@@ -269,6 +286,13 @@ export default function Settings() {
                       <Check className="h-3 w-3" /> saved {savedAtLabel}
                     </span>
                   )}
+                  <button
+                    onClick={onResetSettings}
+                    title="Reset every Settings field to defaults (per-wallet)"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white/70 transition hover:border-rose-300/30 hover:text-rose-200"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" /> Reset all
+                  </button>
                   <button
                     onClick={save}
                     className="group relative inline-flex items-center gap-2 overflow-hidden rounded-lg px-4 py-2 text-xs text-black"
@@ -734,18 +758,90 @@ export default function Settings() {
                         </div>
                       </div>
                       <div className="grid gap-3 p-5 md:grid-cols-2">
-                        {[
-                          { l: "Default temperature",   v: "0.7",   c: "#22d3ee", note: "agent-runtime baseline" },
-                          { l: "Top-K memory recall",   v: "8",     c: "#a855f7", note: "vector store fanout" },
-                          { l: "Mission timeout",       v: "12h",   c: "#f59e0b", note: "auto-pause cutoff" },
-                          { l: "Max parallel agents",   v: "12",    c: "#10b981", note: "swarm concurrency cap" },
-                        ].map((x) => (
-                          <div key={x.l} className="rounded-xl border border-white/10 bg-black/30 p-4">
-                            <div className="text-[10px] uppercase tracking-widest text-white/40">{x.l}</div>
-                            <div className="mt-1 text-2xl tabular-nums" style={{ color: x.c }}>{x.v}</div>
-                            <div className="mt-1 text-[10px] text-white/40">{x.note} · v2 will expose tuning</div>
+                        {/* Temperature — number-with-slider for fine control. */}
+                        <div className="rounded-xl border border-white/10 bg-black/30 p-4">
+                          <div className="flex items-center justify-between text-[10px] uppercase tracking-widest text-white/40">
+                            <span>Default temperature</span>
+                            <span className="font-mono text-cyan-300">{settings.defaults.temperature.toFixed(2)}</span>
                           </div>
-                        ))}
+                          <input
+                            type="range"
+                            min={0}
+                            max={2}
+                            step={0.05}
+                            value={settings.defaults.temperature}
+                            onChange={(e) => updateDefaults({ temperature: parseFloat(e.target.value) })}
+                            className="mt-3 w-full accent-cyan-300"
+                          />
+                          <div className="mt-1 text-[10px] text-white/40">0 deterministic → 2 wild · agent-runtime baseline</div>
+                        </div>
+
+                        {/* Top-K memory — integer 1..30 */}
+                        <div className="rounded-xl border border-white/10 bg-black/30 p-4">
+                          <div className="flex items-center justify-between text-[10px] uppercase tracking-widest text-white/40">
+                            <span>Top-K memory recall</span>
+                            <span className="font-mono text-purple-300">{settings.defaults.topKMemory}</span>
+                          </div>
+                          <input
+                            type="number"
+                            min={1}
+                            max={30}
+                            step={1}
+                            value={settings.defaults.topKMemory}
+                            onChange={(e) => {
+                              const v = Math.max(1, Math.min(30, Math.round(parseInt(e.target.value || "0", 10) || 0)));
+                              updateDefaults({ topKMemory: v });
+                            }}
+                            className="mt-3 w-full rounded-md border border-white/10 bg-black/50 px-3 py-1.5 text-sm tabular-nums text-white focus:border-purple-300/40 focus:outline-none"
+                          />
+                          <div className="mt-1 text-[10px] text-white/40">vector store fanout per recall · 1–30</div>
+                        </div>
+
+                        {/* Mission timeout — select preset hours */}
+                        <div className="rounded-xl border border-white/10 bg-black/30 p-4">
+                          <div className="flex items-center justify-between text-[10px] uppercase tracking-widest text-white/40">
+                            <span>Mission timeout</span>
+                            <span className="font-mono text-amber-300">{settings.defaults.missionTimeoutHours}h</span>
+                          </div>
+                          <select
+                            value={settings.defaults.missionTimeoutHours}
+                            onChange={(e) => updateDefaults({ missionTimeoutHours: parseInt(e.target.value, 10) })}
+                            className="mt-3 w-full rounded-md border border-white/10 bg-black/50 px-3 py-1.5 text-sm text-white focus:outline-none"
+                          >
+                            {[1, 4, 8, 12, 24, 48, 72].map((h) => (
+                              <option key={h} value={h}>{h} hours</option>
+                            ))}
+                          </select>
+                          <div className="mt-1 text-[10px] text-white/40">auto-pause cutoff for long-running missions</div>
+                        </div>
+
+                        {/* Max parallel agents — integer 1..20 */}
+                        <div className="rounded-xl border border-white/10 bg-black/30 p-4">
+                          <div className="flex items-center justify-between text-[10px] uppercase tracking-widest text-white/40">
+                            <span>Max parallel agents</span>
+                            <span className="font-mono text-emerald-300">{settings.defaults.maxParallelAgents}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={1}
+                            max={20}
+                            step={1}
+                            value={settings.defaults.maxParallelAgents}
+                            onChange={(e) => updateDefaults({ maxParallelAgents: parseInt(e.target.value, 10) })}
+                            className="mt-3 w-full accent-emerald-300"
+                          />
+                          <div className="mt-1 text-[10px] text-white/40">swarm concurrency cap · 1–20</div>
+                        </div>
+                      </div>
+                      <div className="border-t border-white/5 px-5 pb-4 pt-3 text-[11px] text-white/45">
+                        Values persist per-wallet in this browser. v1 surfaces them here so you can tune the workspace; v2 will plumb them through the backend agent runtime so every invoke uses your defaults end-to-end.{" "}
+                        <button
+                          type="button"
+                          onClick={() => updateDefaults(DEFAULT_AGENT_DEFAULTS)}
+                          className="ml-1 text-cyan-300 hover:underline"
+                        >
+                          Reset defaults
+                        </button>
                       </div>
                     </Card>
                   </div>
