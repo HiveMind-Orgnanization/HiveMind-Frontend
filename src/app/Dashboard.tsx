@@ -408,8 +408,32 @@ export default function Dashboard() {
                         {paused ? "Mission · Paused" : "Mission · Active"}
                       </span>
                     </div>
-                    <h1 className="mt-2 text-3xl tracking-tight md:text-4xl">{active.title}</h1>
-                    <p className="mt-2 max-w-2xl text-sm text-white/55">{active.objective}</p>
+                    {(() => {
+                      // Mission title + objective are often the same string (the wizard sets
+                      // both to the user's prompt by default). Show the title clamped to two
+                      // lines for layout sanity, and only render the objective separately
+                      // when it actually differs from the title — otherwise the hero card
+                      // grows to fit two copies of the same sentence.
+                      const rawTitle = active.title.trim();
+                      const rawObjective = active.objective.trim();
+                      const sameText = rawTitle.toLowerCase() === rawObjective.toLowerCase();
+                      // Derive a tight headline from the title — strip trailing detail lists
+                      // ("— hero, gallery, mint button") so the h1 is the gist, not the spec.
+                      const headline = rawTitle.split(/\s+[—–-]\s+/)[0]!.trim() || rawTitle;
+                      const shouldShowObjective = !sameText || rawTitle.length > 80;
+                      return (
+                        <>
+                          <h1 className="mt-2 line-clamp-2 text-2xl tracking-tight md:text-3xl xl:text-4xl">
+                            {headline}
+                          </h1>
+                          {shouldShowObjective && (
+                            <p className="mt-2 line-clamp-2 max-w-2xl text-sm text-white/55">
+                              {rawObjective}
+                            </p>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Link to="/missions/new" className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white/80 hover:border-cyan-300/30">
@@ -622,20 +646,27 @@ export default function Dashboard() {
                   </span>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-3 p-4 md:grid-cols-3 xl:grid-cols-6">
+              {/* Adaptive column count — match the actual number of stages so a single-stage
+                  mission doesn't render as a skinny 1/6-width column with truncated text. */}
+              <div
+                className="grid gap-3 p-4"
+                style={{
+                  gridTemplateColumns: `repeat(${Math.max(1, Math.min(computedStages.length || 1, 4))}, minmax(0, 1fr))`,
+                }}
+              >
                 {computedStages.length > 0 ? (
                   computedStages.map((stage, i) => {
                     const tasks = tasksByStage[stage.name] ?? [];
                     return (
                       <div key={stage.name} className="rounded-xl border border-white/10 bg-black/30 p-3">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            {stage.status === "done" && <CheckCircle2 className="h-3.5 w-3.5 text-emerald-300" />}
-                            {stage.status === "active" && <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-300" />}
-                            {stage.status === "queued" && <Circle className="h-3.5 w-3.5 text-white/30" />}
-                            <span className="text-xs">{stage.name}</span>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex min-w-0 items-center gap-2">
+                            {stage.status === "done" && <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-300" />}
+                            {stage.status === "active" && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-cyan-300" />}
+                            {stage.status === "queued" && <Circle className="h-3.5 w-3.5 shrink-0 text-white/30" />}
+                            <span className="truncate text-xs">{stage.name}</span>
                           </div>
-                          <span className="text-[10px] tabular-nums text-white/40">{stage.count}</span>
+                          <span className="shrink-0 text-[10px] tabular-nums text-white/40">{stage.count}</span>
                         </div>
 
                         <div className="my-3 h-0.5 w-full overflow-hidden rounded-full bg-white/5">
@@ -655,14 +686,15 @@ export default function Dashboard() {
 
                         <div className="space-y-1.5">
                           {tasks.slice(0, 3).map((t) => (
+                            // Task row — title gets the full width; the agent label moves
+                            // to the right of the title (small, dim). Dropped the T-id chip
+                            // since the raw task id isn't user-meaningful and just crowded
+                            // the row when the parent card was narrow.
                             <div key={t.id} className="rounded-md border border-white/5 bg-white/[0.02] p-2 text-[11px]">
                               <div className="flex items-center gap-1.5 text-white/85">
-                                <span className="h-1.5 w-1.5 rounded-full" style={{ background: t.color, boxShadow: `0 0 6px ${t.color}` }} />
-                                <span className="flex-1 truncate">{t.title}</span>
-                              </div>
-                              <div className="mt-1 flex items-center justify-between text-[9px] text-white/40">
-                                <span>{t.id.slice(0, 8)}</span>
-                                <span>{t.agent}</span>
+                                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: t.color, boxShadow: `0 0 6px ${t.color}` }} />
+                                <span className="min-w-0 flex-1 truncate" title={t.title}>{t.title}</span>
+                                <span className="shrink-0 text-[9px] uppercase tracking-wider text-white/40">{t.agent}</span>
                               </div>
                             </div>
                           ))}

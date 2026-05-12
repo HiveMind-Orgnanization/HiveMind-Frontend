@@ -78,8 +78,18 @@ function MissionSwitcher() {
     navigate("/agents");
   }
 
+  // Smarter title preview for the navbar — strip trailing detail lists ("— hero, mint…"),
+  // truncate at a word boundary so we never mid-word, and cap at ~36 chars.
+  const previewTitle = (() => {
+    if (!activeMission) return "";
+    const head = activeMission.title.split(/\s+[—–-]\s+/)[0]!.trim() || activeMission.title;
+    if (head.length <= 36) return head;
+    const truncated = head.slice(0, 36);
+    const lastSpace = truncated.lastIndexOf(" ");
+    return `${truncated.slice(0, lastSpace > 20 ? lastSpace : 36).trimEnd()}…`;
+  })();
   const label = activeMission
-    ? `Mission #${activeMission.id} · ${activeMission.title.slice(0, 28)}${activeMission.title.length > 28 ? "…" : ""}`
+    ? `Mission #${activeMission.id} · ${previewTitle}`
     : "No active mission";
 
   const dotColor = activeMission ? statusDot(activeMission.status) : "#6b7280";
