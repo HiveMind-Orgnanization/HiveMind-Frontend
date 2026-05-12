@@ -7,8 +7,12 @@ import {
 import { Sidebar } from "./components/dashboard/sidebar";
 import { TopNav } from "./components/dashboard/topnav";
 import { PageHeader } from "./components/dashboard/page-header";
-import { useHiveMindActivity } from "./hooks/useHiveMind";
-import { subscribeLocalActivity } from "../lib/agent-activity-bus";
+import { useHiveMindActivity, type WsStatus } from "./hooks/useHiveMind";
+import {
+  subscribeLocalActivity,
+  getRecentLocalActivity,
+  clearLocalActivity,
+} from "../lib/agent-activity-bus";
 import { apiConfigured } from "../lib/api";
 
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
@@ -90,12 +94,26 @@ function nextLog(id: number): LogLine {
 
 export default function LiveConsole() {
   const syntheticStream = !apiConfigured();
-  const [logs, setLogs] = useState<LogLine[]>(() =>
-    syntheticStream ? Array.from({ length: 28 }).map((_, i) => nextLog(i)) : [],
-  );
+  // Seed from the persisted ring so opening this page after agents have run
+  // shows recent history immediately instead of an empty "Listening…" state.
+  // The local activity bus writes through to localStorage on every emit, so
+  // a fresh page load can replay the last ~200 events.
+  const initialLogs = useMemo<LogLine[]>(() => {
+    if (syntheticStream) return Array.from({ length: 28 }).map((_, i) => nextLog(i));
+    const persisted = getRecentLocalActivity();
+    return persisted.map((e, i) => ({
+      id: i,
+      t: new Date(e.ts).toLocaleTimeString("en-US", { hour12: false }),
+      level: "model" as const,
+      agent: e.agent,
+      msg: e.message.length > 2000 ? `${e.message.slice(0, 2000)}…` : e.message,
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const [logs, setLogs] = useState<LogLine[]>(initialLogs);
   const [paused, setPaused] = useState(false);
   const [filter, setFilter] = useState<LogLevel | "all">("all");
-  const idRef = useRef(syntheticStream ? 28 : 0);
+  const idRef = useRef(initialLogs.length);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [stick, setStick] = useState(true);
 
@@ -133,7 +151,7 @@ export default function LiveConsole() {
     });
   }, []);
 
-  useHiveMindActivity(pushActivity);
+  const { status: wsStatus } = useHiveMindActivity(pushActivity);
 
   // Local fallback — when the Vercel→EB hop drops the WebSocket, this still
   // surfaces every agent invoke happening in the same tab so the console is
@@ -250,13 +268,33 @@ export default function LiveConsole() {
               }}
               actions={
                 <div className="flex items-center gap-2">
-                  <div className="flex items-center gap-2 rounded-xl border border-cyan-300/30 bg-cyan-300/5 px-3 py-2 text-[11px] uppercase tracking-[0.25em] text-cyan-300 backdrop-blur">
-                    <Radio className="h-3.5 w-3.5" />
-                    <span>channel</span>
-                    <span className="font-mono normal-case tracking-normal">
-                      {syntheticStream ? "demo" : "global"}
-                    </span>
-                  </div>
+                  {/* Honest WS connection badge — was a static "channel global"
+                      pill that lied when the socket never actually connected.
+                      Now reflects the real state of the realtime hub so users
+                      understand why events may be slow to arrive. */}
+                  {(() => {
+                    const statusMap: Record<WsStatus | "demo", { label: string; sub: string; tone: string; pulse: boolean }> = {
+                      demo:        { label: "demo",       sub: "synthetic",  tone: "border-cyan-300/30 bg-cyan-300/5 text-cyan-300",     pulse: false },
+                      connecting:  { label: "connecting", sub: "ws · global", tone: "border-amber-300/30 bg-amber-300/5 text-amber-300", pulse: true  },
+                      open:        { label: "live",       sub: "ws · global", tone: "border-emerald-300/30 bg-emerald-300/5 text-emerald-200", pulse: true  },
+                      closed:      { label: "fallback",   sub: "in-tab bus",  tone: "border-rose-300/30 bg-rose-300/5 text-rose-200",     pulse: false },
+                      unsupported: { label: "offline",    sub: "no realtime", tone: "border-white/15 bg-white/[0.04] text-white/50",     pulse: false },
+                    };
+                    const key: WsStatus | "demo" = syntheticStream ? "demo" : wsStatus;
+                    const s = statusMap[key];
+                    return (
+                      <div className={`flex items-center gap-2 rounded-xl border ${s.tone} px-3 py-2 text-[11px] uppercase tracking-[0.25em] backdrop-blur`}>
+                        <span className="relative flex h-1.5 w-1.5">
+                          {s.pulse && (
+                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-75" style={{ background: "currentColor" }} />
+                          )}
+                          <span className="relative inline-flex h-1.5 w-1.5 rounded-full" style={{ background: "currentColor" }} />
+                        </span>
+                        <span>{s.label}</span>
+                        <span className="font-mono normal-case tracking-normal opacity-70">{s.sub}</span>
+                      </div>
+                    );
+                  })()}
                   {syntheticStream ? (
                     <button
                       onClick={() => setPaused((p) => !p)}
@@ -267,7 +305,11 @@ export default function LiveConsole() {
                     </button>
                   ) : null}
                   <button
-                    onClick={() => setLogs([])}
+                    onClick={() => {
+                      setLogs([]);
+                      clearLocalActivity();
+                    }}
+                    title="Clear feed + persisted history"
                     className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white/60 hover:border-rose-300/30 hover:text-rose-200"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
@@ -360,6 +402,23 @@ export default function LiveConsole() {
                         </div>
                         {syntheticStream ? (
                           <span>Stream paused or cleared · resume demo above.</span>
+                        ) : wsStatus === "connecting" ? (
+                          <>
+                            <div className="text-sm text-white/75">Connecting to realtime hub…</div>
+                            <div className="text-[11px] text-white/45">
+                              Establishing the WebSocket. If this stays for more than a few seconds, the
+                              Vercel→EB hop is dropping <span className="font-mono text-cyan-300/70">/ws</span> upgrades —
+                              local activity from your own tab will still appear below.
+                            </div>
+                          </>
+                        ) : wsStatus === "closed" ? (
+                          <>
+                            <div className="text-sm text-white/75">Realtime hub unreachable</div>
+                            <div className="text-[11px] text-white/45">
+                              Falling back to the in-tab activity bus — your own agent invocations will still
+                              stream here when you launch missions. Trying to reconnect with backoff.
+                            </div>
+                          </>
                         ) : (
                           <>
                             <div className="text-sm text-white/75">Listening for agent activity…</div>
@@ -367,7 +426,7 @@ export default function LiveConsole() {
                               No <span className="font-mono text-cyan-300/70">agent.activity</span> events on{" "}
                               <span className="font-mono text-white/60">channel global</span> yet. Open the{" "}
                               <strong className="text-white/70">Agent Workspace</strong> with an active mission and
-                              send a prompt — each invoke streams a preview here in real time.
+                              send a prompt — each invoke streams here in real time and is persisted across reloads.
                             </div>
                           </>
                         )}

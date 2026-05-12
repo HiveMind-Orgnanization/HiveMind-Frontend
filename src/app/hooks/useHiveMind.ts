@@ -164,34 +164,93 @@ export function useReputationLeaderboard(pollMs = 60000) {
   return { leaderboard, loading, reload: load };
 }
 
-/** Subscribe to backend realtime agent.activity events on the global channel. */
-export function useHiveMindActivity(onEvt: (e: AgentActivityEvt) => void) {
+export type WsStatus = "connecting" | "open" | "closed" | "unsupported";
+
+/**
+ * Subscribe to backend realtime agent.activity events on the global channel.
+ *
+ * Production behaviour: Vercel doesn't proxy WebSocket upgrades through its
+ * /api rewrites, so wss://<vercel-host>/ws will fail to connect. This hook
+ * now retries with exponential backoff (1s → 30s capped) so a delayed
+ * backend deploy + intermittent gateway flap no longer leaves the Live
+ * Console permanently silent. The returned `status` lets consumers surface
+ * connection state honestly instead of pretending we're listening when the
+ * socket never opened.
+ */
+export function useHiveMindActivity(onEvt: (e: AgentActivityEvt) => void): { status: WsStatus } {
   const cb = useRef(onEvt);
   cb.current = onEvt;
+  const [status, setStatus] = useState<WsStatus>("connecting");
+
   useEffect(() => {
     const url = wsUrl();
-    if (!url) return;
-    const ws = new WebSocket(url);
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(String(ev.data)) as {
-          type?: string;
-          payload?: AgentActivityEvt;
-        };
-        if (msg.type === "agent.activity" && msg.payload) cb.current(msg.payload);
-      } catch {
-        /* ignore malformed */
-      }
+    if (!url) {
+      setStatus("unsupported");
+      return;
+    }
+
+    let cancelled = false;
+    let socket: WebSocket | null = null;
+    let reconnectAttempt = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleReconnect = () => {
+      if (cancelled) return;
+      const delay = Math.min(30_000, 1000 * Math.pow(2, reconnectAttempt));
+      reconnectAttempt += 1;
+      reconnectTimer = setTimeout(connect, delay);
     };
-    ws.onopen = () => {
+
+    const connect = () => {
+      if (cancelled) return;
+      setStatus("connecting");
       try {
-        ws.send(JSON.stringify({ action: "subscribe", channel: "global" }));
+        socket = new WebSocket(url);
       } catch {
-        /* ignore */
+        setStatus("closed");
+        scheduleReconnect();
+        return;
       }
+      socket.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(String(ev.data)) as {
+            type?: string;
+            payload?: AgentActivityEvt;
+          };
+          if (msg.type === "agent.activity" && msg.payload) cb.current(msg.payload);
+        } catch {
+          /* ignore malformed */
+        }
+      };
+      socket.onopen = () => {
+        if (cancelled) return;
+        reconnectAttempt = 0;
+        setStatus("open");
+        try {
+          socket?.send(JSON.stringify({ action: "subscribe", channel: "global" }));
+        } catch {
+          /* ignore */
+        }
+      };
+      socket.onerror = () => {
+        if (!cancelled) setStatus("closed");
+      };
+      socket.onclose = () => {
+        if (cancelled) return;
+        setStatus("closed");
+        scheduleReconnect();
+      };
     };
-    return () => ws.close();
+
+    connect();
+    return () => {
+      cancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      try { socket?.close(); } catch { /* ignore */ }
+    };
   }, []);
+
+  return { status };
 }
 
 export function useHiveMindRealtime(opts: {
