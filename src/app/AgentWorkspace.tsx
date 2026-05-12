@@ -1835,6 +1835,59 @@ function AgentWorkspaceMissionBody({
 
   const artifactTree = useMemo(() => buildArtifactTree(artifacts), [artifacts]);
   const uniqueArtifactPaths = useMemo(() => dedupeArtifactsByPath(artifacts).length, [artifacts]);
+
+  // Reconstruct chat from artifacts when the workspace snapshot is missing. Two cases
+  // hit this:
+  //   1. A mission whose chat was never PUT to the backend (sign-in lag, network hiccup)
+  //   2. A mission whose local snapshot got wiped by an earlier per-wallet cleanup
+  // Without this, the user opens a completed mission with 37 saved files and sees a
+  // blank chat panel — a real "did anything happen?" moment. The synthesized bubbles
+  // are honest about what they are (one per role, listing the saved paths) so the user
+  // can still follow the mission's history even when the conversational record is gone.
+  useEffect(() => {
+    if (!workspaceMergeDone) return;
+    if (messages.length > 0) return;
+    if (artifacts.length === 0) return;
+    const byRole = new Map<string, { agent: string; role: string; paths: string[]; ts: number }>();
+    for (const a of [...artifacts].sort((x, y) => x.createdAt - y.createdAt)) {
+      const key = `${a.role}::${a.agent}`;
+      const cur = byRole.get(key);
+      if (cur) {
+        if (!cur.paths.includes(a.path)) cur.paths.push(a.path);
+        if (a.createdAt > cur.ts) cur.ts = a.createdAt;
+      } else {
+        byRole.set(key, { agent: a.agent, role: a.role, paths: [a.path], ts: a.createdAt });
+      }
+    }
+    if (byRole.size === 0) return;
+    const ROLE_COLOR: Record<string, string> = {
+      Strategy: "#22d3ee",
+      Research: "#a855f7",
+      Design: "#3b82f6",
+      Development: "#06b6d4",
+      Marketing: "#ec4899",
+      Treasury: "#10b981",
+      Analytics: "#f97316",
+      Coordination: "#8b5cf6",
+      Memory: "#f59e0b",
+    };
+    const synthesized: ChatMsg[] = [...byRole.values()]
+      .sort((a, b) => a.ts - b.ts)
+      .map((entry, idx) => {
+        const fileList = entry.paths.slice(0, 6).join(", ");
+        const more = entry.paths.length > 6 ? ` (+${entry.paths.length - 6} more)` : "";
+        return {
+          id: entry.ts * 1000 + idx,
+          agent: entry.role,
+          color: ROLE_COLOR[entry.role] ?? "#94a3b8",
+          text: `${entry.role} saved ${entry.paths.length} file${entry.paths.length === 1 ? "" : "s"}: ${fileList}${more}.`,
+          ts: new Date(entry.ts).toLocaleTimeString("en-US", { hour12: false }),
+          state: "approved" as const,
+        };
+      });
+    setMessages(synthesized);
+  }, [workspaceMergeDone, messages.length, artifacts]);
+
   /** True whenever the swarm or any in-flight agent invoke is producing code — drives the preview "Building…" overlay. */
   const swarmRunning = useMemo(
     () =>
