@@ -694,6 +694,65 @@ export type InvokeAgentApiResult =
  * exceeds Vercel's 30 s rewrite timeout, surfacing as "network" failures. Async route
  * returns 202 immediately and we poll, identical to swarm-run.
  */
+/**
+ * Polls an existing invoke-async jobId until it terminates. Extracted from
+ * invokeAgentApi so both the initial call and resume-after-navigation use the
+ * same poll loop.
+ */
+async function pollInvokeJob(
+  agentId: string,
+  jobId: string,
+): Promise<InvokeAgentApiResult> {
+  const statusPath = `/api/agents/${encodeURIComponent(agentId)}/invoke-status/${encodeURIComponent(jobId)}`;
+  const FAST_MS = 1500;
+  const SLOW_MS = 4000;
+  let elapsed = 0;
+  const BUDGET_MS = 5 * 60_000;
+  for (let i = 0; elapsed < BUDGET_MS; i++) {
+    const wait = i < 8 ? FAST_MS : SLOW_MS;
+    await new Promise<void>((r) => setTimeout(r, wait));
+    elapsed += wait;
+    const poll = await fetchWithRetryForGateway(statusPath, undefined, { attempts: 4, baseDelayMs: 500 });
+    if (poll.status === 401) return { ok: false, reason: "unauthorized" };
+    if (!poll.ok) continue;
+    const s = (await poll.json()) as {
+      status: "running" | "done" | "failed";
+      result?: { reply?: string; provider?: string; model?: string; debugLlm?: string; artifactPathsApplied?: string[]; persistArtifactParseFailed?: boolean };
+      error?: string;
+    };
+    if (s.status === "running") continue;
+    if (s.status === "failed") return { ok: false, reason: "network" };
+    const j = s.result ?? {};
+    return {
+      ok: true,
+      reply: j.reply ?? "",
+      provider: j.provider ?? "mock",
+      model: j.model ?? "unknown",
+      debugLlm: j.debugLlm,
+      artifactPathsApplied: Array.isArray(j.artifactPathsApplied) ? j.artifactPathsApplied : undefined,
+      persistArtifactParseFailed: Boolean(j.persistArtifactParseFailed),
+    };
+  }
+  return { ok: false, reason: "network" };
+}
+
+/**
+ * Re-attach to an existing invoke jobId after navigation/reload. Same return
+ * shape as invokeAgentApi minus the POST. Callers are responsible for clearing
+ * the tracker record on completion.
+ */
+export async function resumeInvokePollApi(
+  agentId: string,
+  jobId: string,
+): Promise<InvokeAgentApiResult> {
+  if (!apiConfigured()) return { ok: false, reason: "network" };
+  try {
+    return await pollInvokeJob(agentId, jobId);
+  } catch {
+    return { ok: false, reason: "network" };
+  }
+}
+
 export async function invokeAgentApi(
   agentId: string,
   body: {
@@ -705,6 +764,12 @@ export async function invokeAgentApi(
     persistArtifactUpdates?: boolean;
     /** Override LLM model id (e.g. "gpt-4o", "llama-3.3-70b-versatile"). */
     model?: string;
+  },
+  options?: {
+    /** Fires once the backend returns a jobId, before polling begins. Lets the
+     *  caller register the in-flight job with swarm-tracker so navigation away
+     *  + back can resume polling instead of orphaning the call. */
+    onJobIdAssigned?: (jobId: string) => void;
   },
 ): Promise<InvokeAgentApiResult> {
   if (!apiConfigured()) return { ok: false, reason: "network" };
@@ -725,39 +790,9 @@ export async function invokeAgentApi(
     const startJson = (await start.json().catch(() => ({}))) as { jobId?: string };
     const jobId = typeof startJson.jobId === "string" ? startJson.jobId : null;
     if (!jobId) return invokeAgentSync(agentId, body);
+    options?.onJobIdAssigned?.(jobId);
 
-    // 2) Poll until done. Fast cadence first 12 s, then back off.
-    const statusPath = `/api/agents/${encodeURIComponent(agentId)}/invoke-status/${encodeURIComponent(jobId)}`;
-    const FAST_MS = 1500;
-    const SLOW_MS = 4000;
-    let elapsed = 0;
-    const BUDGET_MS = 5 * 60_000; // 5 minutes
-    for (let i = 0; elapsed < BUDGET_MS; i++) {
-      const wait = i < 8 ? FAST_MS : SLOW_MS;
-      await new Promise<void>((r) => setTimeout(r, wait));
-      elapsed += wait;
-      const poll = await fetchWithRetryForGateway(statusPath, undefined, { attempts: 4, baseDelayMs: 500 });
-      if (poll.status === 401) return { ok: false, reason: "unauthorized" };
-      if (!poll.ok) continue; // transient — keep polling
-      const s = (await poll.json()) as {
-        status: "running" | "done" | "failed";
-        result?: { reply?: string; provider?: string; model?: string; debugLlm?: string; artifactPathsApplied?: string[]; persistArtifactParseFailed?: boolean };
-        error?: string;
-      };
-      if (s.status === "running") continue;
-      if (s.status === "failed") return { ok: false, reason: "network" };
-      const j = s.result ?? {};
-      return {
-        ok: true,
-        reply: j.reply ?? "",
-        provider: j.provider ?? "mock",
-        model: j.model ?? "unknown",
-        debugLlm: j.debugLlm,
-        artifactPathsApplied: Array.isArray(j.artifactPathsApplied) ? j.artifactPathsApplied : undefined,
-        persistArtifactParseFailed: Boolean(j.persistArtifactParseFailed),
-      };
-    }
-    return { ok: false, reason: "network" };
+    return await pollInvokeJob(agentId, jobId);
   } catch {
     return { ok: false, reason: "network" };
   }
