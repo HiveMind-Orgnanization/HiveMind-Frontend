@@ -77,6 +77,37 @@ export default defineConfig(({ mode }) => {
       },
     },
     assetsInclude: ['**/*.svg', '**/*.csv'],
+    build: {
+      minify: "esbuild",
+      sourcemap: false,
+      rollupOptions: {
+        output: {
+          // Isolate the wallet adapter stack into its own chunk. A circular
+          // ESM cycle inside @solana/wallet-adapter-* (and its peer deps
+          // through buffer + bs58) was tripping the production minifier's
+          // hoisting after the CodeMirror addition reshuffled module IDs,
+          // crashing the landing page with "Cannot access 'Ke' before
+          // initialization". Pinning the wallet bundle to its own chunk
+          // forces stable initialization order and dodges the trap.
+          manualChunks: (id) => {
+            if (id.includes("node_modules")) {
+              if (id.includes("@solana/wallet-adapter") || id.includes("@solana/wallet-standard")) {
+                return "wallet-adapter";
+              }
+              if (id.includes("@solana/web3.js") || id.includes("@solana/")) {
+                return "solana-core";
+              }
+              if (id.includes("@codemirror") || id.includes("@uiw/react-codemirror") || id.includes("@lezer")) {
+                return "codemirror";
+              }
+              if (id.includes("react-dom") || id.match(/[/\\]react[/\\]/) || id.includes("react-router")) {
+                return "react-core";
+              }
+            }
+          },
+        },
+      },
+    },
     server: {
       proxy: {
         '/api': { target: backendTarget, changeOrigin: true },
