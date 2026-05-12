@@ -197,9 +197,9 @@ export default function TeamWorkspace() {
                 {agentsLoading
                   ? Array.from({ length: 5 }).map((_, i) => (
                       <div key={i} className="rounded-xl border border-white/10 bg-black/30 p-4">
-                        <Skeleton className="h-4 w-4" />
-                        <Skeleton className="mt-3 h-8 w-20" />
-                        <Skeleton className="mt-1 h-3 w-14" />
+                        <Skeleton className="h-4 w-4 bg-white/10" />
+                        <Skeleton className="mt-3 h-8 w-20 bg-white/10" />
+                        <Skeleton className="mt-1 h-3 w-14 bg-white/5" />
                       </div>
                     ))
                   : overview.map((m, i) => (
@@ -236,16 +236,16 @@ export default function TeamWorkspace() {
                     ? Array.from({ length: 4 }).map((_, i) => (
                         <div key={i} className="grid grid-cols-12 items-center gap-3 px-5 py-3">
                           <div className="col-span-4 flex items-center gap-3">
-                            <Skeleton className="h-9 w-9 rounded-lg" />
+                            <Skeleton className="h-9 w-9 rounded-lg bg-white/10" />
                             <div className="flex-1">
-                              <Skeleton className="h-3 w-12" />
-                              <Skeleton className="mt-1 h-4 w-36" />
+                              <Skeleton className="h-3 w-12 bg-white/5" />
+                              <Skeleton className="mt-1 h-4 w-36 bg-white/10" />
                             </div>
                           </div>
-                          <Skeleton className="col-span-2 h-7 w-20" />
-                          <Skeleton className="col-span-1 h-4 w-8" />
-                          <Skeleton className="col-span-4 h-4 w-full" />
-                          <Skeleton className="col-span-1 h-6 w-10 ml-auto" />
+                          <Skeleton className="col-span-2 h-7 w-20 bg-white/5" />
+                          <Skeleton className="col-span-1 h-4 w-8 bg-white/5" />
+                          <Skeleton className="col-span-4 h-4 w-full bg-white/5" />
+                          <Skeleton className="col-span-1 h-6 w-10 ml-auto bg-white/10" />
                         </div>
                       ))
                     : missions.length === 0 ? (
@@ -340,7 +340,7 @@ export default function TeamWorkspace() {
                   <div className="text-[10px] uppercase tracking-[0.3em] text-white/40">Total balance</div>
                   <div className="mt-1 flex items-baseline gap-2">
                     {agentsLoading
-                      ? <Skeleton className="h-9 w-32" />
+                      ? <Skeleton className="h-9 w-32 bg-white/10" />
                       : <span className="text-3xl tabular-nums">
                           {rawMissions.reduce((s, m) => s + (m.budget ?? m.cost ?? 0), 0).toFixed(2)}
                         </span>

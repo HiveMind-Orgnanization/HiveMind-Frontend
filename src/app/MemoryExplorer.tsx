@@ -493,11 +493,11 @@ export default function MemoryExplorer() {
                     ? Array.from({ length: 5 }).map((_, i) => (
                         <div key={i} className="rounded-lg border border-white/5 bg-white/[0.02] p-3">
                           <div className="flex items-center justify-between">
-                            <Skeleton className="h-3 w-24" />
-                            <Skeleton className="h-3 w-16" />
+                            <Skeleton className="h-3 w-24 bg-white/10" />
+                            <Skeleton className="h-3 w-16 bg-white/5" />
                           </div>
-                          <Skeleton className="mt-2 h-4 w-full" />
-                          <Skeleton className="mt-1 h-3 w-3/4" />
+                          <Skeleton className="mt-2 h-4 w-full bg-white/10" />
+                          <Skeleton className="mt-1 h-3 w-3/4 bg-white/5" />
                         </div>
                       ))
                     : displayRetrieved.map((m, i) => (
