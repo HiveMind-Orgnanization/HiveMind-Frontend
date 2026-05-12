@@ -388,9 +388,17 @@ async function mergeMissionWorkspaceFromApi(
   const localRich = Boolean(local && !isVacuousWorkspaceSnapshot(local));
 
   if (remote.updatedAt >= localTs) {
-    // Avoid wiping real UI with an empty server snapshot (race: debounced PUT saves {} before merge returns).
-    if (remoteVacuous && localRich && local) {
-      await putMissionWorkspaceSnapshotApi(missionId, snapshotToWorkspaceSnapshotV1(local));
+    // CRITICAL: never overwrite in-memory state with an empty remote snapshot. The
+    // backend can legitimately return an empty snapshot for missions whose chat was
+    // never PUT (sign-in lag, network blip), or whose snapshot table simply has no
+    // row yet. If we blindly setMessages([]) here, we wipe whatever was in memory —
+    // including the artifact-synthesized fallback that runs in the body component. So
+    // when remote is vacuous, we either save local back to the server (if local has
+    // data) or just return — never touching the React state setters.
+    if (remoteVacuous) {
+      if (localRich && local) {
+        await putMissionWorkspaceSnapshotApi(missionId, snapshotToWorkspaceSnapshotV1(local));
+      }
       return;
     }
     setters.setMessages(remote.snapshot.messages);
@@ -1845,17 +1853,13 @@ function AgentWorkspaceMissionBody({
   // are honest about what they are (one per role, listing the saved paths) so the user
   // can still follow the mission's history even when the conversational record is gone.
   //
-  // Earlier version of this guarded on `workspaceMergeDone`, which never flipped reliably
-  // in some race orderings (the merge effect declared LATER than the synthesis effect,
-  // so on the first render synthesis ran with workspaceMergeDone=false and returned;
-  // the dep change from false→true sometimes coincided with artifacts still being [],
-  // and the subsequent artifact load didn't re-fire synthesis because messages had been
-  // overwritten by an empty merge result mid-flight). Track per-mission "did we run yet"
-  // via a ref instead — fire once, deterministically, when artifacts arrive and chat is
-  // still empty. If real chat lands later via WebSocket, our synthesized bubbles co-exist.
-  const synthesizedForMissionRef = useRef<string | null>(null);
+  // Root-cause fix lives in mergeMissionWorkspaceFromApi: it no longer overwrites
+  // messages with an empty remote snapshot, so the synthesized fallback below is no
+  // longer racing with a wipe. This effect therefore stays simple: whenever chat is
+  // empty AND artifacts exist, synthesize. It naturally self-stops because setMessages
+  // makes messages.length > 0, and the merge's earlier-than-this-effect setMessages
+  // (from a non-empty remote) also keeps us out. No ref needed.
   useEffect(() => {
-    if (synthesizedForMissionRef.current === mission.id) return;
     if (messages.length > 0) return;
     if (artifacts.length === 0) return;
     const byRole = new Map<string, { agent: string; role: string; paths: string[]; ts: number }>();
@@ -1895,9 +1899,8 @@ function AgentWorkspaceMissionBody({
           state: "approved" as const,
         };
       });
-    synthesizedForMissionRef.current = mission.id;
     setMessages(synthesized);
-  }, [mission.id, messages.length, artifacts]);
+  }, [messages.length, artifacts]);
 
   /** True whenever the swarm or any in-flight agent invoke is producing code — drives the preview "Building…" overlay. */
   const swarmRunning = useMemo(
