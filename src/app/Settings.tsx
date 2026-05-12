@@ -5,8 +5,8 @@ import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { toast } from "sonner";
 import {
   Settings as SettingsIcon, Wallet, Brain, KeyRound, Shield, Bell, Users,
-  Cpu, Sparkles, Zap, Hexagon, Lock, ChevronRight, Save, RefreshCcw,
-  Check, Copy, Eye, EyeOff, ExternalLink,
+  Cpu, Sparkles, Zap, Hexagon, Lock, ChevronRight, Save,
+  Check, Copy, Eye, EyeOff, ExternalLink, X,
 } from "lucide-react";
 import { Sidebar } from "./components/dashboard/sidebar";
 import { TopNav } from "./components/dashboard/topnav";
@@ -128,6 +128,44 @@ export default function Settings() {
   const [copied, setCopied] = useState(false);
   const [revealKeys, setRevealKeys] = useState(false);
   const [section, setSection] = useState<SectionId>("wallet");
+
+  // Live workspace integration probes — used by the API & Keys section to
+  // show the user the actual endpoints HiveMind is talking to + whether
+  // they're reachable right now. apiReachable starts null while we wait
+  // for the first /health response.
+  const apiUrl = import.meta.env.VITE_API_URL?.trim() ?? "";
+  const [apiReachable, setApiReachable] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const probe = async () => {
+      try {
+        const target = apiUrl ? `${apiUrl}/health` : "/health";
+        const r = await fetch(target, { method: "GET" });
+        if (!cancelled) setApiReachable(r.ok);
+      } catch {
+        if (!cancelled) setApiReachable(false);
+      }
+    };
+    probe();
+    const id = window.setInterval(probe, 30_000);
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, [apiUrl]);
+
+  const [liveSlot, setLiveSlot] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const slot = await connection.getSlot();
+        if (!cancelled) setLiveSlot(slot);
+      } catch {
+        /* leave null */
+      }
+    };
+    tick();
+    const id = window.setInterval(tick, 10_000);
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, [connection]);
 
   useEffect(() => {
     if (!publicKey) { setSolBalance(null); return; }
@@ -431,44 +469,97 @@ export default function Settings() {
                 )}
 
                 {section === "permissions" && (
-                  <Card>
-                    <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
-                      <div className="flex items-center gap-2 text-sm">
-                        <Shield className="h-4 w-4 text-cyan-300" />
-                        Agent Permissions Matrix
+                  <div className="space-y-6">
+                    <Card>
+                      <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
+                        <div className="flex items-center gap-2 text-sm">
+                          <Shield className="h-4 w-4 text-cyan-300" />
+                          v1 Orchestration Rules
+                        </div>
+                        <span className="text-[10px] uppercase tracking-[0.25em] text-cyan-300">fixed</span>
                       </div>
-                      <span className="text-[10px] uppercase tracking-[0.25em] text-cyan-300">delegation authority</span>
-                    </div>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="border-b border-white/5 text-[10px] uppercase tracking-widest text-white/40">
-                            <th className="px-5 py-3 text-left">Capability</th>
-                            {agentList.map((a) => (
-                              <th key={a} className="px-3 py-3 text-center">{a}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {permissionRows.map((row) => (
-                            <tr key={row.p} className="border-b border-white/5 last:border-b-0 hover:bg-white/[0.02]">
-                              <td className="px-5 py-3">
-                                <div className="text-sm text-white/85">{row.p}</div>
-                                <div className="text-[11px] text-white/45">{row.sub}</div>
-                              </td>
+                      <div className="space-y-3 p-5 text-[12px] text-white/65">
+                        <p>
+                          Agent permissions are <span className="text-white/85">hard-coded</span> in v1 — every
+                          mission runs the same delegation graph (Strategy plans, Research gathers, Design /
+                          Development build, Coordination merges, Treasury settles). The Permissions Matrix
+                          UI is a preview of the v2 per-capability toggles.
+                        </p>
+                        <p className="text-white/45 text-[11px]">
+                          Why fixed in v1: predictable artifact pipeline + deterministic mission cost. Loosening
+                          the graph requires a per-workspace policy engine that&apos;s shipping in v2.
+                        </p>
+                      </div>
+
+                      <div className="overflow-x-auto border-t border-white/5">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b border-white/5 text-[10px] uppercase tracking-widest text-white/40">
+                              <th className="px-5 py-3 text-left">Capability</th>
                               {agentList.map((a) => (
-                                <td key={a} className="px-3 py-3 text-center">
-                                  <div className="flex justify-center">
-                                    <Toggle on={!!row.defaults[a as keyof typeof row.defaults]} onClick={() => undefined} disabled />
-                                  </div>
-                                </td>
+                                <th key={a} className="px-3 py-3 text-center">{a}</th>
                               ))}
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </Card>
+                          </thead>
+                          <tbody>
+                            {permissionRows.map((row) => (
+                              <tr key={row.p} className="border-b border-white/5 last:border-b-0 hover:bg-white/[0.02]">
+                                <td className="px-5 py-3">
+                                  <div className="text-sm text-white/85">{row.p}</div>
+                                  <div className="text-[11px] text-white/45">{row.sub}</div>
+                                </td>
+                                {agentList.map((a) => {
+                                  const on = !!row.defaults[a as keyof typeof row.defaults];
+                                  return (
+                                    <td key={a} className="px-3 py-3 text-center">
+                                      <div className="flex justify-center">
+                                        {on ? (
+                                          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-emerald-300/35 bg-emerald-300/10 text-emerald-300" title={`${a} can ${row.p.toLowerCase()}`}>
+                                            <Check className="h-3 w-3" />
+                                          </span>
+                                        ) : (
+                                          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-white/10 bg-white/[0.02] text-white/25" title={`${a} cannot ${row.p.toLowerCase()}`}>
+                                            <X className="h-3 w-3" />
+                                          </span>
+                                        )}
+                                      </div>
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </Card>
+
+                    <Card>
+                      <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
+                        <div className="flex items-center gap-2 text-sm">
+                          <Shield className="h-4 w-4 text-purple-300" />
+                          Per-workspace Permissions
+                        </div>
+                        <span className="rounded-full border border-purple-300/30 bg-purple-300/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.25em] text-purple-200">
+                          v2 roadmap
+                        </span>
+                      </div>
+                      <div className="grid gap-3 p-5 md:grid-cols-3">
+                        {[
+                          { t: "Per-capability toggles", d: "Allow / deny each agent per workspace, signed on-chain so verifiers can enforce." },
+                          { t: "Audit log", d: "Every delegation, payout, and signed transaction streamed to an append-only feed." },
+                          { t: "Custom role packs", d: "Define your own role (e.g. 'QA Reviewer') with a permission template." },
+                        ].map((p) => (
+                          <div key={p.t} className="rounded-xl border border-white/10 bg-black/30 p-3">
+                            <div className="text-sm text-white/85">{p.t}</div>
+                            <div className="mt-1 text-[11px] text-white/45">{p.d}</div>
+                            <div className="mt-2 inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.02] px-2 py-0.5 text-[10px] uppercase tracking-[0.25em] text-white/40">
+                              coming soon
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </Card>
+                  </div>
                 )}
 
                 {section === "wallet" && (
@@ -661,59 +752,151 @@ export default function Settings() {
                 )}
 
                 {section === "api" && (
-                  <Card>
-                    <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
-                      <div className="flex items-center gap-2 text-sm">
-                        <KeyRound className="h-4 w-4 text-cyan-300" />
-                        API & Integration Keys
+                  <div className="space-y-6">
+                    <Card>
+                      <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
+                        <div className="flex items-center gap-2 text-sm">
+                          <KeyRound className="h-4 w-4 text-cyan-300" />
+                          Workspace Integrations
+                        </div>
+                        <span className="text-[10px] uppercase tracking-[0.25em] text-cyan-300">live</span>
                       </div>
-                      <button className="rounded-md border border-cyan-300/30 bg-cyan-300/10 px-2.5 py-1 text-[11px] text-cyan-100 hover:bg-cyan-300/20">
-                        + new key
-                      </button>
-                    </div>
-                    <div className="divide-y divide-white/5">
-                      {[
-                        { l: "HiveMind API · production", v: "hm_live_4kJ29F1e",    role: "read · write · sign", c: "#22d3ee", date: "2026-04-12" },
-                        { l: "Webhook · Discord",          v: "wh_disc_1aB22cD",    role: "deliver",             c: "#5865f2", date: "2026-04-29" },
-                        { l: "Solana RPC",                 v: "rpc_helius_2qN73KZ", role: "submit · query",      c: "#a855f7", date: "2026-04-04" },
-                      ].map((k, i) => (
-                        <motion.div
-                          key={k.l}
-                          initial={{ opacity: 0, x: -6 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          transition={{ delay: i * 0.04 }}
-                          className="grid grid-cols-12 items-center gap-3 px-5 py-3"
-                        >
-                          <div className="col-span-4 flex items-center gap-3">
-                            <div className="h-8 w-8 rounded-lg"
-                              style={{ background: `linear-gradient(135deg, ${k.c}55, ${k.c}11)`, boxShadow: `0 0 12px ${k.c}55` }} />
-                            <div>
-                              <div className="text-sm">{k.l}</div>
-                              <div className="text-[10px] text-white/45">created {k.date}</div>
+                      <div className="space-y-2 px-5 pt-3 text-[11px] text-white/45">
+                        These are the real endpoints HiveMind talks to from this browser.
+                        Per-user API keys aren&apos;t in v1 — every action is signed by the
+                        wallet you connected, which means you don&apos;t need a token to
+                        invoke agents or settle missions.
+                      </div>
+                      <div className="divide-y divide-white/5">
+                        {[
+                          {
+                            l: "HiveMind API",
+                            v: apiUrl || "(same origin — Vite proxy)",
+                            c: "#22d3ee",
+                            label: apiReachable === null ? "checking…" : apiReachable ? "reachable" : "unreachable",
+                            labelTone: apiReachable === false ? "rose" : apiReachable ? "emerald" : "amber",
+                            sub: "REST + JWT (wallet-signed)",
+                          },
+                          {
+                            l: "Solana RPC",
+                            v: connection.rpcEndpoint,
+                            c: "#a855f7",
+                            label: liveSlot != null ? `slot ${liveSlot.toLocaleString()}` : "no slot",
+                            labelTone: liveSlot != null ? "emerald" : "amber",
+                            sub: "devnet — used for balance, deposits, and settlement",
+                          },
+                          {
+                            l: "Treasury pubkey",
+                            v: TREASURY_RECIPIENT_PUBKEY,
+                            c: "#10b981",
+                            label: "fixed",
+                            labelTone: "cyan",
+                            sub: "Override with VITE_HM_TREASURY_PUBKEY",
+                          },
+                          {
+                            l: "Realtime hub",
+                            v: apiUrl ? `${apiUrl.replace(/^http/, "ws")}/ws` : "wss://<same-origin>/ws",
+                            c: "#f59e0b",
+                            label: "best-effort",
+                            labelTone: "amber",
+                            sub: "Vercel→EB hop drops WS — Live Console falls back to in-tab bus",
+                          },
+                        ].map((k, i) => {
+                          const masked = `${k.v.slice(0, 6)}…${k.v.slice(-6)}`;
+                          const display = revealKeys ? k.v : (k.v.length > 22 ? masked : k.v);
+                          const toneClass =
+                            k.labelTone === "emerald" ? "border-emerald-300/30 bg-emerald-300/10 text-emerald-200"
+                            : k.labelTone === "rose"   ? "border-rose-300/30 bg-rose-300/10 text-rose-200"
+                            : k.labelTone === "cyan"   ? "border-cyan-300/30 bg-cyan-300/10 text-cyan-200"
+                            : "border-amber-300/30 bg-amber-300/10 text-amber-200";
+                          return (
+                            <motion.div
+                              key={k.l}
+                              initial={{ opacity: 0, x: -6 }}
+                              animate={{ opacity: 1, x: 0 }}
+                              transition={{ delay: i * 0.04 }}
+                              className="grid grid-cols-12 items-center gap-3 px-5 py-3"
+                            >
+                              <div className="col-span-3 flex items-center gap-3">
+                                <div className="h-8 w-8 rounded-lg"
+                                  style={{ background: `linear-gradient(135deg, ${k.c}55, ${k.c}11)`, boxShadow: `0 0 12px ${k.c}55` }} />
+                                <div>
+                                  <div className="text-sm">{k.l}</div>
+                                  <div className="text-[10px] text-white/45">{k.sub}</div>
+                                </div>
+                              </div>
+                              <div className="col-span-7 flex items-center gap-2 rounded-md border border-white/10 bg-black/40 px-3 py-1.5">
+                                <Hexagon className="h-3 w-3 text-white/40" />
+                                <span className="truncate font-mono text-[11px]">{display}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setRevealKeys((v) => !v)}
+                                  className="ml-auto text-white/40 hover:text-white"
+                                  title={revealKeys ? "Mask values" : "Reveal full values"}
+                                >
+                                  {revealKeys ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    void navigator.clipboard.writeText(k.v);
+                                    toast.success(`Copied ${k.l}`);
+                                  }}
+                                  className="text-white/40 hover:text-cyan-300"
+                                  title={`Copy ${k.l}`}
+                                >
+                                  <Copy className="h-3 w-3" />
+                                </button>
+                              </div>
+                              <div className="col-span-2 text-right">
+                                <span className={`rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-widest ${toneClass}`}>
+                                  {k.label}
+                                </span>
+                              </div>
+                            </motion.div>
+                          );
+                        })}
+                      </div>
+                    </Card>
+
+                    <Card>
+                      <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
+                        <div className="flex items-center gap-2 text-sm">
+                          <KeyRound className="h-4 w-4 text-purple-300" />
+                          Personal API Keys
+                        </div>
+                        <span className="rounded-full border border-purple-300/30 bg-purple-300/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.25em] text-purple-200">
+                          v2 roadmap
+                        </span>
+                      </div>
+                      <div className="p-5">
+                        <p className="text-[12px] text-white/65">
+                          Token-based programmatic access (run missions from scripts, ship CI workflows
+                          that invoke agents, wire webhooks to Discord/Slack) lands with the v2 release.
+                        </p>
+                        <p className="mt-2 text-[11px] text-white/45">
+                          v1 auth: every API call is signed by the wallet you connected (JWT issued from a
+                          wallet challenge). Sign in once with your Solana wallet and the dashboard does
+                          the rest — no copy-pasting tokens.
+                        </p>
+                        <div className="mt-4 grid gap-2 md:grid-cols-3">
+                          {[
+                            { t: "Production key", d: "Long-lived, scoped to read/write/sign" },
+                            { t: "Webhook secrets", d: "Discord, Slack, custom URLs for mission completion" },
+                            { t: "Custom RPC", d: "Override Solana RPC with your own provider" },
+                          ].map((x) => (
+                            <div key={x.t} className="rounded-xl border border-white/10 bg-black/30 p-3">
+                              <div className="text-sm text-white/85">{x.t}</div>
+                              <div className="mt-1 text-[11px] text-white/45">{x.d}</div>
+                              <div className="mt-2 inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.02] px-2 py-0.5 text-[10px] uppercase tracking-[0.25em] text-white/40">
+                                coming soon
+                              </div>
                             </div>
-                          </div>
-                          <div className="col-span-5 flex items-center gap-2 rounded-md border border-white/10 bg-black/40 px-3 py-1.5">
-                            <Hexagon className="h-3 w-3 text-white/40" />
-                            <span className="font-mono text-[11px]">
-                              {revealKeys ? k.v : k.v.slice(0, 4) + "•".repeat(k.v.length - 8) + k.v.slice(-4)}
-                            </span>
-                            <button onClick={() => setRevealKeys((v) => !v)} className="ml-auto text-white/40 hover:text-white">
-                              {revealKeys ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-                            </button>
-                            <button className="text-white/40 hover:text-cyan-300">
-                              <Copy className="h-3 w-3" />
-                            </button>
-                          </div>
-                          <div className="col-span-2 text-[11px] text-white/55">{k.role}</div>
-                          <div className="col-span-1 text-right">
-                            <button className="rounded-md border border-white/10 bg-white/[0.03] p-1.5 text-white/55 hover:border-rose-300/30 hover:text-rose-200">
-                              <RefreshCcw className="h-3 w-3" />
-                            </button>
-                          </div>
-                        </motion.div>
-                      ))}
-                    </div>
-                  </Card>
+                          ))}
+                        </div>
+                      </div>
+                    </Card>
+                  </div>
                 )}
 
                 {section === "notifications" && (
@@ -760,49 +943,86 @@ export default function Settings() {
                 )}
 
                 {section === "team" && (
-                  <Card>
-                    <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
-                      <div className="flex items-center gap-2 text-sm">
-                        <Users className="h-4 w-4 text-cyan-300" />
-                        Workspace Members
+                  <div className="space-y-6">
+                    <Card>
+                      <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
+                        <div className="flex items-center gap-2 text-sm">
+                          <Users className="h-4 w-4 text-cyan-300" />
+                          Workspace Members
+                        </div>
+                        <button
+                          type="button"
+                          disabled
+                          title="Multi-user workspaces ship in v2"
+                          className="cursor-not-allowed rounded-md border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] text-white/55 opacity-70"
+                        >
+                          + invite
+                          <span className="ml-1 rounded-full border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[9px] uppercase tracking-[0.2em] text-white/45">
+                            Soon
+                          </span>
+                        </button>
                       </div>
-                      <button className="rounded-md border border-cyan-300/30 bg-cyan-300/10 px-2.5 py-1 text-[11px] text-cyan-100 hover:bg-cyan-300/20">
-                        + invite
-                      </button>
-                    </div>
-                    <div className="divide-y divide-white/5">
-                      {[
-                        { n: "Astra",   r: "Owner",        e: "astra@hivemind.sol",    last: "now",    c: "#22d3ee" },
-                        { n: "Halo",    r: "Operator",     e: "halo@hivemind.sol",     last: "12m",    c: "#06b6d4" },
-                        { n: "Vega",    r: "Strategist",   e: "vega@hivemind.sol",     last: "2h",     c: "#a855f7" },
-                        { n: "Lumen",   r: "Contributor",  e: "lumen@hivemind.sol",    last: "1d",     c: "#3b82f6" },
-                      ].map((u, i) => (
+                      <div className="px-5 pt-3 text-[11px] text-white/45">
+                        v1 is single-user: every mission, artifact, and treasury action is scoped to the wallet
+                        you connected. Multi-user workspaces (shared missions, role-based access, on-chain
+                        team treasuries) ship in v2.
+                      </div>
+                      <div className="divide-y divide-white/5">
                         <motion.div
-                          key={u.n}
                           initial={{ opacity: 0, x: -4 }}
                           animate={{ opacity: 1, x: 0 }}
-                          transition={{ delay: i * 0.04 }}
                           className="grid grid-cols-12 items-center gap-3 px-5 py-3"
                         >
-                          <div className="col-span-4 flex items-center gap-3">
-                            <div className="h-8 w-8 rounded-lg"
-                              style={{ background: `linear-gradient(135deg, ${u.c}55, ${u.c}11)`, boxShadow: `0 0 12px ${u.c}55` }} />
+                          <div className="col-span-5 flex items-center gap-3">
+                            <div
+                              className={`h-8 w-8 rounded-lg ${connected ? "bg-gradient-to-br from-emerald-300/40 to-cyan-300/30" : "bg-white/[0.06]"}`}
+                              style={connected ? { boxShadow: "0 0 14px rgba(16,185,129,0.35)" } : undefined}
+                            />
                             <div>
-                              <div className="text-sm">{u.n}</div>
-                              <div className="text-[10px] text-white/45">{u.e}</div>
+                              <div className="text-sm">You</div>
+                              <div className="font-mono text-[10px] text-white/45">{walletShort}</div>
                             </div>
                           </div>
-                          <div className="col-span-3 text-[11px] text-white/70">{u.r}</div>
-                          <div className="col-span-3 text-[11px] text-white/45">last active {u.last}</div>
+                          <div className="col-span-3 text-[11px] text-white/70">Owner · Workspace admin</div>
+                          <div className="col-span-2 text-[11px] text-emerald-300">
+                            {connected ? "active" : "wallet not connected"}
+                          </div>
                           <div className="col-span-2 text-right">
-                            <button className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-[11px] text-white/55 hover:border-cyan-300/30 hover:text-cyan-200">
-                              manage
-                            </button>
+                            <span className="rounded-full border border-cyan-300/30 bg-cyan-300/10 px-2 py-0.5 text-[10px] uppercase tracking-widest text-cyan-200">
+                              v1 — only seat
+                            </span>
                           </div>
                         </motion.div>
-                      ))}
-                    </div>
-                  </Card>
+                      </div>
+                    </Card>
+
+                    <Card>
+                      <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
+                        <div className="flex items-center gap-2 text-sm">
+                          <Users className="h-4 w-4 text-purple-300" />
+                          Multi-user Workspaces
+                        </div>
+                        <span className="rounded-full border border-purple-300/30 bg-purple-300/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.25em] text-purple-200">
+                          v2 roadmap
+                        </span>
+                      </div>
+                      <div className="grid gap-3 p-5 md:grid-cols-3">
+                        {[
+                          { t: "Invite by wallet", d: "Onboard teammates with a Solana pubkey — no email required, signing-time access control." },
+                          { t: "Shared treasury (3/5 multisig)", d: "Mission budgets approve through a multisig vault so no single member can drain it." },
+                          { t: "Role packs", d: "Owner / Operator / Contributor / Auditor — each with a permission template you can override." },
+                        ].map((p) => (
+                          <div key={p.t} className="rounded-xl border border-white/10 bg-black/30 p-3">
+                            <div className="text-sm text-white/85">{p.t}</div>
+                            <div className="mt-1 text-[11px] text-white/45">{p.d}</div>
+                            <div className="mt-2 inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.02] px-2 py-0.5 text-[10px] uppercase tracking-[0.25em] text-white/40">
+                              coming soon
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </Card>
+                  </div>
                 )}
               </div>
             </div>
