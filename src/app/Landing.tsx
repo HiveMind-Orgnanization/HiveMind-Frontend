@@ -82,27 +82,67 @@ function Logo() {
   );
 }
 
-function PrimaryButton({ children, icon: Icon = ArrowRight }: { children: React.ReactNode; icon?: any }) {
-  return (
-    <button className="group relative inline-flex items-center gap-2 overflow-hidden rounded-full px-6 py-3 text-sm text-black">
+/** Polymorphic CTA — renders as <Link> for internal routes (`to`), <a> for external links
+ *  (`href`), or plain <button> when only `onClick` is provided. Keeps the gradient visual. */
+function PrimaryButton({
+  children,
+  icon: Icon = ArrowRight,
+  to,
+  href,
+  onClick,
+}: {
+  children: React.ReactNode;
+  icon?: any;
+  to?: string;
+  href?: string;
+  onClick?: () => void;
+}) {
+  const className =
+    "group relative inline-flex items-center gap-2 overflow-hidden rounded-full px-6 py-3 text-sm text-black";
+  const inner = (
+    <>
       <span className="absolute inset-0 bg-gradient-to-r from-cyan-300 via-white to-purple-300" />
       <span className="absolute inset-0 bg-gradient-to-r from-cyan-300 to-purple-400 opacity-0 transition group-hover:opacity-100" />
       <span className="relative">{children}</span>
       <Icon className="relative h-4 w-4 transition group-hover:translate-x-0.5" />
       <span className="absolute -inset-1 rounded-full bg-cyan-400/40 blur-xl opacity-50 group-hover:opacity-80 transition" />
-    </button>
+    </>
   );
+  if (to) return <Link to={to} className={className}>{inner}</Link>;
+  if (href) return <a href={href} target="_blank" rel="noreferrer" className={className}>{inner}</a>;
+  return <button type="button" onClick={onClick} className={className}>{inner}</button>;
 }
 
-function SecondaryButton({ children }: { children: React.ReactNode }) {
-  return (
-    <button className="group inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.03] px-6 py-3 text-sm text-white/90 backdrop-blur transition hover:border-cyan-300/40 hover:bg-cyan-300/5">
+function SecondaryButton({
+  children,
+  to,
+  href,
+  onClick,
+}: {
+  children: React.ReactNode;
+  to?: string;
+  href?: string;
+  onClick?: () => void;
+}) {
+  const className =
+    "group inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.03] px-6 py-3 text-sm text-white/90 backdrop-blur transition hover:border-cyan-300/40 hover:bg-cyan-300/5";
+  const inner = (
+    <>
       <Play className="h-3.5 w-3.5 text-cyan-300" />
       {children}
       <ChevronRight className="h-4 w-4 text-white/50 transition group-hover:translate-x-0.5" />
-    </button>
+    </>
   );
+  if (to) return <Link to={to} className={className}>{inner}</Link>;
+  if (href) return <a href={href} target="_blank" rel="noreferrer" className={className}>{inner}</a>;
+  return <button type="button" onClick={onClick} className={className}>{inner}</button>;
 }
+
+/** Outbound links surfaced across the landing page. Single source of truth so updating the
+ *  demo URL or Twitter handle is a one-line change. */
+const DEMO_VIDEO_URL = "https://www.youtube.com/watch?v=5d9067mHfPE&t=1s";
+const TWITTER_URL = "https://x.com/Jagadeeeshftw";
+const GITHUB_URL = "https://github.com/HiveMind-Orgnanization";
 
 export default function App() {
   return (
@@ -121,7 +161,14 @@ export default function App() {
             </a>
           </nav>
           <div className="flex items-center gap-2">
-            <button className="hidden text-sm text-white/70 hover:text-white md:block">Sign in</button>
+            <a
+              href={DEMO_VIDEO_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="hidden text-sm text-white/70 hover:text-white md:block"
+            >
+              Watch demo
+            </a>
             <Link to="/dashboard" className="rounded-full border border-cyan-300/30 bg-cyan-300/10 px-4 py-1.5 text-sm text-cyan-200 hover:bg-cyan-300/20">
               Launch App
             </Link>
@@ -181,8 +228,8 @@ export default function App() {
               transition={{ duration: 0.8, delay: 0.3 }}
               className="mt-10 flex flex-wrap items-center justify-center gap-3"
             >
-              <PrimaryButton icon={Rocket}>Launch Mission</PrimaryButton>
-              <SecondaryButton>Watch Live Demo</SecondaryButton>
+              <PrimaryButton icon={Rocket} to="/missions/new">Launch Mission</PrimaryButton>
+              <SecondaryButton href={DEMO_VIDEO_URL}>Watch Live Demo</SecondaryButton>
             </motion.div>
 
             <motion.div
@@ -481,8 +528,8 @@ export default function App() {
                   Launch your first AI workforce mission today.
                 </p>
                 <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
-                  <PrimaryButton icon={Rocket}>Start Mission</PrimaryButton>
-                  <SecondaryButton>Explore Demo</SecondaryButton>
+                  <PrimaryButton icon={Rocket} to="/missions/new">Start Mission</PrimaryButton>
+                  <SecondaryButton href={DEMO_VIDEO_URL}>Explore Demo</SecondaryButton>
                 </div>
               </div>
             </div>
@@ -501,21 +548,21 @@ export default function App() {
           <div className="grid grid-cols-3 gap-10 text-sm text-white/60">
             <div className="space-y-2">
               <div className="text-[11px] uppercase tracking-[0.3em] text-white/30">Product</div>
-              <a className="block hover:text-white" href="#">Mission Control</a>
-              <a className="block hover:text-white" href="#">Agents</a>
-              <a className="block hover:text-white" href="#">Treasury</a>
+              <Link className="block hover:text-white" to="/dashboard">Mission Control</Link>
+              <Link className="block hover:text-white" to="/agents">Agents</Link>
+              <Link className="block hover:text-white" to="/treasury">Treasury</Link>
             </div>
             <div className="space-y-2">
               <div className="text-[11px] uppercase tracking-[0.3em] text-white/30">Resources</div>
               <a className="flex items-center gap-1.5 hover:text-white" href="/docs/" target="_blank" rel="noreferrer"><BookOpen className="h-3.5 w-3.5" />Docs</a>
-              <a className="flex items-center gap-1.5 hover:text-white" href="#"><Github className="h-3.5 w-3.5" />GitHub</a>
-              <a className="flex items-center gap-1.5 hover:text-white" href="#"><Twitter className="h-3.5 w-3.5" />Twitter</a>
+              <a className="flex items-center gap-1.5 hover:text-white" href={GITHUB_URL} target="_blank" rel="noreferrer"><Github className="h-3.5 w-3.5" />GitHub</a>
+              <a className="flex items-center gap-1.5 hover:text-white" href={TWITTER_URL} target="_blank" rel="noreferrer"><Twitter className="h-3.5 w-3.5" />Twitter</a>
             </div>
             <div className="space-y-2">
               <div className="text-[11px] uppercase tracking-[0.3em] text-white/30">Hackathon</div>
-              <a className="block hover:text-white" href="#">Solana Cypherpunk</a>
-              <a className="block hover:text-white" href="#">Demo Day</a>
-              <a className="block hover:text-white" href="#">Pitch Deck</a>
+              <a className="block hover:text-white" href="https://www.colosseum.org/" target="_blank" rel="noreferrer">Colosseum</a>
+              <a className="block hover:text-white" href={DEMO_VIDEO_URL} target="_blank" rel="noreferrer">Demo Video</a>
+              <a className="block hover:text-white" href={GITHUB_URL} target="_blank" rel="noreferrer">Source Code</a>
             </div>
           </div>
         </div>
