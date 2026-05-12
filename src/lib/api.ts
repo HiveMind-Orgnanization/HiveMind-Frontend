@@ -192,10 +192,99 @@ async function fetchWithRetryForGateway(
   return last!;
 }
 
+/**
+ * Polls a known swarm jobId until it terminates or hits the 20-min budget. Used
+ * both by the initial `swarmRunMissionApi` call AND by `resumeSwarmPollApi`
+ * (which re-attaches to an in-flight run after navigation/reload). Without this
+ * extraction the only way to track a swarm was to start a new one — that broke
+ * "navigate away + come back, agent should still be running."
+ */
+async function pollSwarmJob(
+  missionId: string,
+  jobId: string,
+  options?: { onProgress?: (progress: SwarmProgress) => void },
+): Promise<{ ok: true; data: SwarmRunResult } | { ok: false; status: number; message: string }> {
+  let reportedCount = 0;
+  let lastCurrentRole: string | null | undefined = undefined;
+  // First few polls are fast (1.5s) so the resumer sees the latest agent quickly.
+  const FAST_INTERVAL_MS = 1500;
+  const SLOW_INTERVAL_MS = 4000;
+  const FAST_POLLS = 8;
+  let elapsedMs = 0;
+  // Swarm with 5-6 repair rounds + multiple agents + gpt-5.5 can run 10-15 min.
+  const MAX_MS = 20 * 60_000;
+  let pollIdx = 0;
+  while (elapsedMs < MAX_MS) {
+    const intervalMs = pollIdx < FAST_POLLS ? FAST_INTERVAL_MS : SLOW_INTERVAL_MS;
+    await new Promise<void>((res) => setTimeout(res, intervalMs));
+    elapsedMs += intervalMs;
+    pollIdx += 1;
+    const poll = await fetchWithRetryForGateway(
+      `/api/missions/${encodeURIComponent(missionId)}/swarm-status/${encodeURIComponent(jobId)}`,
+      undefined,
+    );
+    if (!poll.ok) {
+      const hint =
+        poll.status === 502 || poll.status === 503 || poll.status === 504
+          ? " The API had a brief gateway error after retries — try running the swarm again, or set VITE_API_URL to your Elastic Beanstalk URL so the browser calls the API directly (avoids Vercel proxy limits)."
+          : "";
+      return { ok: false, status: poll.status, message: `Status check failed (${poll.status}).${hint}` };
+    }
+    const s = (await poll.json()) as {
+      status: string;
+      data?: SwarmRunResult;
+      error?: string;
+      progress?: SwarmProgress;
+    };
+    if (s.progress && options?.onProgress) {
+      const newCount = s.progress.partialResults.length;
+      const roleChanged = s.progress.currentRole !== lastCurrentRole;
+      if (newCount > reportedCount || roleChanged) {
+        reportedCount = newCount;
+        lastCurrentRole = s.progress.currentRole;
+        options.onProgress(s.progress);
+      }
+    }
+    if (s.status === "done") return { ok: true, data: s.data! };
+    if (s.status === "failed") return { ok: false, status: 500, message: s.error ?? "Swarm run failed." };
+    // status === "running" — keep polling
+  }
+  return {
+    ok: false,
+    status: 408,
+    message: "Swarm took longer than 20 min — the backend may still be working. Refresh the page in a minute; if files appear, the swarm finished after this client stopped polling.",
+  };
+}
+
+/**
+ * Resume polling an existing swarm jobId — used after a page reload or
+ * navigation when the backend's job is still in flight. Identical poll
+ * semantics to swarmRunMissionApi minus the POST. Caller is responsible for
+ * calling markSwarmFinished() on completion.
+ */
+export async function resumeSwarmPollApi(
+  missionId: string,
+  jobId: string,
+  options?: { onProgress?: (progress: SwarmProgress) => void },
+): Promise<{ ok: true; data: SwarmRunResult } | { ok: false; status: number; message: string }> {
+  if (!apiConfigured()) return { ok: false, status: 0, message: "API is disabled in this build." };
+  try {
+    return await pollSwarmJob(missionId, jobId, options);
+  } catch {
+    return { ok: false, status: 0, message: "Could not reach the backend." };
+  }
+}
+
 export async function swarmRunMissionApi(
   missionId: string,
   ctx: { title: string; objective: string },
-  options?: { onProgress?: (progress: SwarmProgress) => void },
+  options?: {
+    onProgress?: (progress: SwarmProgress) => void;
+    /** Called once the backend returns a jobId, before the poll loop kicks in.
+     *  Lets callers persist the jobId via swarm-tracker so a remounted workspace
+     *  can resume polling instead of marking the run as orphaned. */
+    onJobIdAssigned?: (jobId: string) => void;
+  },
 ): Promise<{ ok: true; data: SwarmRunResult } | { ok: false; status: number; message: string }> {
   if (!apiConfigured()) return { ok: false, status: 0, message: "API is disabled in this build." };
   try {
@@ -215,66 +304,8 @@ export async function swarmRunMissionApi(
       // Legacy sync response (old backend) — return directly.
       return { ok: true, data: j as SwarmRunResult };
     }
-
-    let reportedCount = 0;
-    let lastCurrentRole: string | null | undefined = undefined;
-    // Poll until done (~8 min budget). First few polls are fast (1.5s) so users see the
-    // first agent's name within a couple seconds; then back off to a longer interval.
-    // WebSocket events are unreliable on the Vercel→EB hop, so progress relies on this
-    // poll loop. Without the fast warmup, the chat shows "..." for ~60-90s until the
-    // first agent (Strategy) finishes — bad UX.
-    const FAST_INTERVAL_MS = 1500;
-    const SLOW_INTERVAL_MS = 4000;
-    const FAST_POLLS = 8; // 8 × 1.5s = 12s of fast polling, then back off
-    let elapsedMs = 0;
-    // Swarm with 5-6 repair rounds + multiple agents + gpt-5.5 can run 10-15 minutes on
-    // a complex codegen mission. Was 8 — users hit "Swarm timed out (8 min)" while the
-    // backend was still working and ended up with stale partial state.
-    const MAX_MS = 20 * 60_000;
-    let pollIdx = 0;
-    while (elapsedMs < MAX_MS) {
-      const intervalMs = pollIdx < FAST_POLLS ? FAST_INTERVAL_MS : SLOW_INTERVAL_MS;
-      await new Promise<void>((res) => setTimeout(res, intervalMs));
-      elapsedMs += intervalMs;
-      pollIdx += 1;
-      const poll = await fetchWithRetryForGateway(
-        `/api/missions/${encodeURIComponent(missionId)}/swarm-status/${encodeURIComponent(jobId)}`,
-        undefined,
-      );
-      if (!poll.ok) {
-        const hint =
-          poll.status === 502 || poll.status === 503 || poll.status === 504
-            ? " The API had a brief gateway error after retries — try running the swarm again, or set VITE_API_URL to your Elastic Beanstalk URL so the browser calls the API directly (avoids Vercel proxy limits)."
-            : "";
-        return {
-          ok: false,
-          status: poll.status,
-          message: `Status check failed (${poll.status}).${hint}`,
-        };
-      }
-      const s = (await poll.json()) as {
-        status: string;
-        data?: SwarmRunResult;
-        error?: string;
-        progress?: SwarmProgress;
-      };
-      // Fire onProgress whenever EITHER a new role started (currentRole changed) OR a role
-      // finished (partialResults grew). Previously this only fired on completion, so the
-      // chat looked frozen for 60-90s until Strategy finished.
-      if (s.progress && options?.onProgress) {
-        const newCount = s.progress.partialResults.length;
-        const roleChanged = s.progress.currentRole !== lastCurrentRole;
-        if (newCount > reportedCount || roleChanged) {
-          reportedCount = newCount;
-          lastCurrentRole = s.progress.currentRole;
-          options.onProgress(s.progress);
-        }
-      }
-      if (s.status === "done") return { ok: true, data: s.data! };
-      if (s.status === "failed") return { ok: false, status: 500, message: s.error ?? "Swarm run failed." };
-      // status === "running" — keep polling
-    }
-    return { ok: false, status: 408, message: "Swarm took longer than 20 min — the backend may still be working. Refresh the page in a minute; if files appear, the swarm finished after this client stopped polling." };
+    options?.onJobIdAssigned?.(jobId);
+    return await pollSwarmJob(missionId, jobId, options);
   } catch {
     return { ok: false, status: 0, message: "Could not reach the backend. Is it running on port 8787?" };
   }

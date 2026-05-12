@@ -41,10 +41,16 @@ import {
   invokeAgentApi,
   putMissionWorkspaceSnapshotApi,
   swarmRunMissionApi,
+  resumeSwarmPollApi,
   type SwarmProgress,
   type MissionArtifact,
   type SwarmRunResult,
 } from "../lib/api";
+import {
+  markSwarmStarted,
+  markSwarmFinished,
+  getActiveSwarmJob,
+} from "../lib/swarm-tracker";
 import { getAuthToken } from "../lib/auth-token";
 import {
   loadWorkspaceSnapshot,
@@ -414,12 +420,14 @@ async function mergeMissionWorkspaceFromApi(
 }
 
 /**
- * Any HiveMind/agent bubble persisted as `state: "thinking"` (or "delegating"/"executing")
- * was an in-flight invoke when the user reloaded — it can never finish in this page session.
- * Mark it failed with a clear note so the spinner stops and we don't show ghost "Thinking for 125s"
- * cards stacked from every reload. Also stops handlePreviewAutoFix from inheriting a stale ref.
+ * Any HiveMind/agent bubble persisted as `state: "thinking"` (or "delegating"/
+ * "executing") was an in-flight invoke when the page reloaded. If the backend
+ * job is still tracked (via swarm-tracker), we leave the bubble alone — the
+ * remount will resume polling and stream progress in. If no active job exists,
+ * the run is genuinely orphaned and we mark it failed so the spinner stops.
  */
-function finalizeOrphanedInFlightMessages(messages: ChatMsg[]): ChatMsg[] {
+function finalizeOrphanedInFlightMessages(messages: ChatMsg[], hasActiveJob: boolean): ChatMsg[] {
+  if (hasActiveJob) return messages; // resume path will keep updating these
   let changed = false;
   const out = messages.map((m) => {
     if (m.state !== "thinking" && m.state !== "delegating" && m.state !== "executing") return m;
@@ -433,7 +441,7 @@ function finalizeOrphanedInFlightMessages(messages: ChatMsg[]): ChatMsg[] {
       text:
         m.text && m.text.trim().length > 0
           ? m.text
-          : "This run was interrupted by a page reload. Send a follow-up in chat to continue.",
+          : "This run was interrupted. Send a follow-up in chat to continue, or click Resume if the agent was still working.",
     };
   });
   return changed ? out : messages;
@@ -446,9 +454,10 @@ function missionWorkspaceSeed(walletPk: string | null, missionId: string): {
   selectedAgent: string;
 } {
   const persisted = loadWorkspaceSnapshot(walletPk, missionId);
+  const hasActiveJob = getActiveSwarmJob(missionId) !== null;
   if (persisted) {
     return {
-      messages: finalizeOrphanedInFlightMessages(persisted.messages),
+      messages: finalizeOrphanedInFlightMessages(persisted.messages, hasActiveJob),
       logLines: persisted.logLines,
       timelineEvents: persisted.timelineEvents,
       selectedAgent: persisted.selectedAgent,
@@ -2034,6 +2043,130 @@ function AgentWorkspaceMissionBody({
     return () => window.clearInterval(id);
   }, [autoInvoking, mission.id]);
 
+  // Resume polling for an in-flight swarm job when this workspace remounts (the
+  // user navigated to another page and came back, OR the page reloaded mid-run).
+  // Without this, finalizeOrphanedInFlightMessages would have marked every
+  // in-progress bubble "interrupted" and the backend's still-running job would
+  // never stream its result back. The swarm-tracker survives navigation within
+  // a tab AND survives full reloads via localStorage.
+  useEffect(() => {
+    if (!apiConfigured()) return;
+    const job = getActiveSwarmJob(mission.id);
+    if (!job) return;
+    const inFlight = [...initialWorkspace.messages].reverse().find(
+      (m) =>
+        m.kind === "hivemind_swarm" &&
+        (m.state === "thinking" || m.state === "delegating" || m.state === "executing"),
+    );
+    if (!inFlight) {
+      markSwarmFinished(mission.id);
+      return;
+    }
+    const hmId = inFlight.id;
+    hivemindMsgIdRef.current = hmId;
+    setAutoInvoking(true);
+
+    const ROLE_COLORS: Record<string, string> = {
+      Strategy: "#22d3ee", Research: "#a855f7", Design: "#3b82f6",
+      Development: "#0ea5e9", Marketing: "#ec4899", Treasury: "#10b981",
+      Analytics: "#8b5cf6", Coordination: "#06b6d4", Memory: "#f59e0b",
+    };
+
+    let cancelled = false;
+    void (async () => {
+      const swarm = await resumeSwarmPollApi(mission.id, job.jobId, {
+        onProgress: (progress) => {
+          if (cancelled) return;
+          const progressTs = new Date().toLocaleTimeString("en-US", { hour12: false });
+          const lastResult = progress.partialResults[progress.partialResults.length - 1];
+          setMessages((prev) => prev.map((msg) => {
+            if (msg.id !== hmId) return msg;
+            let thoughts = (msg.thoughts ?? []).map((t) =>
+              !t.done && lastResult && t.agent === lastResult.role
+                ? {
+                    ...t,
+                    text: summarizeAgentHandoff({
+                      role: lastResult.role,
+                      reply: lastResult.replySnippet,
+                      nextRole: progress.currentRole,
+                    }),
+                    done: true,
+                  }
+                : t,
+            );
+            if (progress.currentRole && !thoughts.some((t) => t.agent === progress.currentRole)) {
+              thoughts = [
+                ...thoughts,
+                {
+                  agent: progress.currentRole,
+                  color: ROLE_COLORS[progress.currentRole] ?? "#94a3b8",
+                  text: `${progress.currentRole} agent is analysing…`,
+                  ts: progressTs,
+                  done: false,
+                },
+              ];
+            }
+            return { ...msg, thoughts };
+          }));
+        },
+      });
+      if (cancelled) return;
+      setAutoInvoking(false);
+      markSwarmFinished(mission.id);
+      if (!swarm.ok) {
+        setMessages((prev) => prev.map((m) =>
+          m.id === hmId ? { ...m, state: "failed" as const, text: swarm.message } : m,
+        ));
+        toast.error("Swarm run failed", { description: swarm.message, duration: 12_000 });
+        return;
+      }
+      // Success — finalize the bubble and refresh artifacts. We skip the verifier
+      // bubble + extra log lines here; user can refresh for the full report.
+      const data = swarm.data;
+      const ts2 = new Date().toLocaleTimeString("en-US", { hour12: false });
+      const finalText =
+        (typeof data.finalReply === "string" && data.finalReply.trim().length > 0)
+          ? data.finalReply
+          : (data.results.find((r) => r.role === "Coordination")?.reply ?? "Swarm run finished.");
+      const coordBody = buildCoordinationDeliverableText(data, finalText);
+      const nonCoordResults = data.results.filter((r) => r.role !== "Coordination");
+      const finalThoughts: ChatThought[] = nonCoordResults.map((r, i) => {
+        const nextRole = nonCoordResults[i + 1]?.role ?? "Coordination";
+        return {
+          agent: r.role,
+          color: ROLE_COLORS[r.role] ?? "#94a3b8",
+          text: r.error
+            ? `${r.role} hit an error: ${r.error.slice(0, 180)}`
+            : summarizeAgentHandoff({
+                role: r.role,
+                reply: r.reply ?? "",
+                nextRole,
+                artifactPaths: Array.isArray(r.artifactPaths) ? r.artifactPaths : [],
+              }),
+          ts: ts2,
+          done: true,
+          files: Array.isArray(r.artifactPaths) ? r.artifactPaths.slice(0, 10) : [],
+        };
+      });
+      hivemindMsgIdRef.current = null;
+      const swarmElapsedSecs = Math.round((Date.now() - (data.startedAt ?? Date.now())) / 1000);
+      setMessages((prev) => prev.map((msg) =>
+        msg.id === hmId
+          ? { ...msg, state: "approved" as const, text: coordBody, thoughts: finalThoughts, ts: ts2, elapsedSecs: swarmElapsedSecs }
+          : msg,
+      ));
+      const a = await fetchMissionArtifactsApi(mission.id);
+      if (a) {
+        setArtifacts(a);
+        setSelectedArtifactId((cur) => (cur && a.some((x) => x.id === cur)) ? cur : (a[0]?.id ?? null));
+      }
+      void reloadTasks();
+      toast.success("Agents finished while you were away", { description: "Workspace refreshed.", duration: 6_000 });
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mission.id]);
+
   // Cross-device merge when signed in; re-run after wallet session changes.
   useEffect(() => {
     setWorkspaceMergeDone(false);
@@ -2720,6 +2853,11 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
         mission.id,
         { title: mission.title, objective: mission.objective },
         {
+          onJobIdAssigned: (jobId) => {
+            // Register the in-flight job so navigation away + back resumes
+            // polling instead of marking the run "interrupted".
+            markSwarmStarted(mission.id, jobId);
+          },
           onProgress: (progress: SwarmProgress) => {
             const progressTs = new Date().toLocaleTimeString("en-US", { hour12: false });
             const lastResult = progress.partialResults[progress.partialResults.length - 1];
@@ -2768,6 +2906,9 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
       );
 
       setAutoInvoking(false);
+      // Swarm finished one way or the other — clear the tracked job record so
+      // remounts don't try to resume polling a job that has already terminated.
+      markSwarmFinished(mission.id);
       if (!swarm.ok) {
         setMessages((prev) => prev.map((msg) =>
           msg.id === hmId ? { ...msg, state: "failed", text: swarm.message } : msg,
