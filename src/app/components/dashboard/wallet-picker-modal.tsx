@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useWallet, type Wallet } from "@solana/wallet-adapter-react";
 import { WalletReadyState } from "@solana/wallet-adapter-base";
@@ -18,10 +18,18 @@ function partition(wallets: Wallet[]) {
   return { installed, loadable, notDetected };
 }
 
+/** Hard ceiling on how long we'll show a "Connecting…" spinner before assuming the wallet
+ *  popup got dismissed/lost and giving the user an escape hatch. The Solflare popup
+ *  occasionally fails to surface (mac space switch, OS focus stealing) — without this
+ *  timeout, the modal sits on "CONNECTING" forever until the user reloads the page. */
+const CONNECT_TIMEOUT_MS = 30_000;
+
 export function WalletPickerModal({ open, onClose }: Props) {
-  const { wallets, select, connect, connecting, connected, wallet } = useWallet();
+  const { wallets, select, connect, disconnect, connecting, connected, wallet } = useWallet();
   const [pendingName, setPendingName] = useState<string | null>(null);
+  const [timedOut, setTimedOut] = useState(false);
   const triggeredConnectRef = useRef<string | null>(null);
+  const timeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -45,19 +53,36 @@ export function WalletPickerModal({ open, onClose }: Props) {
     if (triggeredConnectRef.current === pendingName) return;
     if (connected || connecting) return;
     triggeredConnectRef.current = pendingName;
+    setTimedOut(false);
+    // Start the watchdog — if connect() doesn't resolve within CONNECT_TIMEOUT_MS,
+    // surface a "try again / cancel" UI instead of leaving the user stranded.
+    if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
+    timeoutRef.current = window.setTimeout(() => {
+      setTimedOut(true);
+    }, CONNECT_TIMEOUT_MS);
     connect().catch(() => {
       // Errors surface via WalletProvider#onError → hm-wallet-error event.
       triggeredConnectRef.current = null;
       setPendingName(null);
+      if (timeoutRef.current) {
+        window.clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
     });
   }, [pendingName, wallet, connected, connecting, connect]);
 
-  // Close once we land in connected state for the wallet we requested.
+  // Close once we land in connected state for the wallet we requested. Also tear down
+  // the watchdog timer so it can't fire stale "timed out" state after success.
   useEffect(() => {
     if (!open || !pendingName) return;
     if (connected && wallet?.adapter.name === pendingName) {
       setPendingName(null);
+      setTimedOut(false);
       triggeredConnectRef.current = null;
+      if (timeoutRef.current) {
+        window.clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
       onClose();
     }
   }, [open, pendingName, connected, wallet, onClose]);
@@ -66,9 +91,38 @@ export function WalletPickerModal({ open, onClose }: Props) {
   useEffect(() => {
     if (!open) {
       setPendingName(null);
+      setTimedOut(false);
       triggeredConnectRef.current = null;
+      if (timeoutRef.current) {
+        window.clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
     }
   }, [open]);
+
+  // Cleanup on unmount.
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
+    };
+  }, []);
+
+  /** User-initiated cancel of an in-flight connection — disconnect the adapter (so
+   *  future `select()` calls re-trigger the popup) and reset our local pending state. */
+  const cancelPending = useCallback(async () => {
+    triggeredConnectRef.current = null;
+    setPendingName(null);
+    setTimedOut(false);
+    if (timeoutRef.current) {
+      window.clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+    try {
+      await disconnect();
+    } catch {
+      /* adapter throws if not connected — fine */
+    }
+  }, [disconnect]);
 
   const { installed, loadable, notDetected } = useMemo(() => partition(wallets), [wallets]);
 
@@ -129,6 +183,45 @@ export function WalletPickerModal({ open, onClose }: Props) {
         </div>
 
         <div className="relative max-h-[70vh] overflow-y-auto px-3 py-3">
+          {/* Watchdog banner — appears if connect() hasn't resolved within 30s. The
+              wallet popup is probably hidden behind a window or got lost on a focus
+              switch. Let the user kick it loose without reloading the page. */}
+          {(pendingName && timedOut) && (
+            <div className="mb-3 rounded-lg border border-amber-300/30 bg-amber-300/[0.06] px-3 py-2.5 text-[12px] text-amber-200">
+              <div className="font-medium">Still waiting on {pendingName}…</div>
+              <div className="mt-0.5 text-[11px] text-amber-200/75">
+                If you don't see the wallet popup, it may be hidden behind another window or
+                blocked by your browser. Cancel and try again, or open your wallet extension
+                manually.
+              </div>
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => void cancelPending()}
+                  className="rounded-md border border-amber-300/40 bg-amber-300/15 px-2.5 py-1 text-[11px] font-medium text-amber-100 hover:bg-amber-300/25"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const name = pendingName;
+                    await cancelPending();
+                    if (name) {
+                      // Re-trigger the same wallet — disconnect + select + connect cycle
+                      // forces a fresh popup even when the adapter cached the trust state.
+                      setPendingName(name);
+                      select(name);
+                    }
+                  }}
+                  className="rounded-md border border-cyan-300/40 bg-cyan-300/15 px-2.5 py-1 text-[11px] font-medium text-cyan-100 hover:bg-cyan-300/25"
+                >
+                  Try again
+                </button>
+              </div>
+            </div>
+          )}
+
           {installed.length === 0 && loadable.length === 0 && notDetected.length === 0 && (
             <div className="px-3 py-6 text-center text-sm text-white/55">
               No Solana wallets detected. Install Phantom or Solflare and reload.

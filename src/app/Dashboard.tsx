@@ -77,9 +77,11 @@ export default function Dashboard() {
     const sync = () => setActiveId(getActiveMissionId(walletPk));
     window.addEventListener("hm-active-mission-changed", sync);
     window.addEventListener("storage", sync);
+    window.addEventListener("hm-wallet-changed", sync);
     return () => {
       window.removeEventListener("hm-active-mission-changed", sync);
       window.removeEventListener("storage", sync);
+      window.removeEventListener("hm-wallet-changed", sync);
     };
   }, [walletPk]);
   const active = missions.find((m) => m.id === activeId) ?? missions[0];

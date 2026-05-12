@@ -43,7 +43,23 @@ export function WalletButton() {
   useEffect(() => {
     const onErr = (e: Event) => {
       const detail = (e as CustomEvent<WalletErrorDetail>).detail;
-      setWalletError(detail?.message ?? "Wallet error");
+      const raw = detail?.message ?? "Wallet error";
+      // Normalize the noisy adapter error messages into something the user can act on.
+      // "User rejected the request." → "Cancelled" etc.
+      const friendly =
+        /reject|cancel/i.test(raw)
+          ? "Cancelled"
+          : /not\s*detected|not\s*found/i.test(raw)
+            ? "Wallet not detected"
+            : /timeout/i.test(raw)
+              ? "Wallet timed out"
+              : raw.slice(0, 60);
+      setWalletError(friendly);
+      // Stale wallet errors are bad UX — auto-clear after 6s so the badge doesn't
+      // linger forever next to the Connect Wallet button.
+      window.setTimeout(() => {
+        setWalletError((cur) => (cur === friendly ? null : cur));
+      }, 6000);
     };
     window.addEventListener(WALLET_ERROR_EVENT, onErr);
     return () => window.removeEventListener(WALLET_ERROR_EVENT, onErr);
@@ -52,6 +68,11 @@ export function WalletButton() {
   useEffect(() => {
     if (connected) setWalletError(null);
   }, [connected]);
+  // Also clear the error the moment the user opens the picker again — they're
+  // about to retry, the previous "Cancelled" label is no longer relevant.
+  useEffect(() => {
+    if (pickerOpen) setWalletError(null);
+  }, [pickerOpen]);
 
   // Position the portal-rendered dropdown relative to the trigger button.
   useLayoutEffect(() => {

@@ -51,10 +51,12 @@ function MissionSwitcher() {
     window.addEventListener("storage", onChange);
     window.addEventListener("hm-missions-updated", onChange);
     window.addEventListener("hm-active-mission-changed", onChange);
+    window.addEventListener("hm-wallet-changed", onChange);
     return () => {
       window.removeEventListener("storage", onChange);
       window.removeEventListener("hm-missions-updated", onChange);
       window.removeEventListener("hm-active-mission-changed", onChange);
+      window.removeEventListener("hm-wallet-changed", onChange);
     };
   }, [walletPk]);
 

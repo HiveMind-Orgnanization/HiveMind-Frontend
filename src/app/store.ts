@@ -163,9 +163,14 @@ export function useMissions() {
     const sync = () => setMissions(read(walletPk));
     window.addEventListener("hm-missions-updated", sync);
     window.addEventListener("storage", sync);
+    // The WalletAccountWatcher in WalletProviders broadcasts this when the user
+    // switches accounts INSIDE the wallet extension (Phantom/Solflare). We listen so
+    // the mission list refreshes immediately without waiting for the next render.
+    window.addEventListener("hm-wallet-changed", sync);
     return () => {
       window.removeEventListener("hm-missions-updated", sync);
       window.removeEventListener("storage", sync);
+      window.removeEventListener("hm-wallet-changed", sync);
     };
   }, [connected, walletPk]);
 
