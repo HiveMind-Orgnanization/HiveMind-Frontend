@@ -1,7 +1,8 @@
 import { useState, useMemo, useEffect } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { motion } from "motion/react";
+import { setActiveMissionIdForWallet } from "./store";
 import {
   Search, Sparkles, Bot, Star, Zap, Activity, Wallet, ArrowRight,
   Filter, TrendingUp, Cpu, Brain, Radio, Crown, Flame, Globe2, ShieldCheck,
@@ -212,7 +213,8 @@ function AgentCard({ a, featured = false }: { a: Agent; featured?: boolean }) {
               Profile
             </Link>
             <Link
-              to="/missions/new"
+              to={`/missions/new?agent=${encodeURIComponent(a.category)}`}
+              title={`Start a new mission with ${a.name} pre-selected`}
               className="group/h relative inline-flex items-center gap-1 overflow-hidden rounded-lg px-3 py-1.5 text-[11px] text-black"
             >
               <span className="absolute inset-0 bg-gradient-to-r from-cyan-300 to-purple-300" />
@@ -307,14 +309,25 @@ function FeaturedCard({ a }: { a: Agent }) {
           ))}
         </div>
 
-        <div className="mt-5 flex items-center justify-between border-t border-white/5 pt-4">
-          <span className="text-[10px] tabular-nums text-white/40 font-mono">{a.wallet}</span>
-          <Link
-            to={`/marketplace/${a.id}`}
-            className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/[0.04] px-3 py-1.5 text-xs text-white/85 hover:border-cyan-300/40 hover:text-cyan-200"
-          >
-            View Profile <ArrowRight className="h-3 w-3" />
-          </Link>
+        <div className="mt-5 flex items-center justify-between gap-2 border-t border-white/5 pt-4">
+          <span className="truncate text-[10px] tabular-nums text-white/40 font-mono">{a.wallet}</span>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Link
+              to={`/marketplace/${a.id}`}
+              className="inline-flex items-center gap-1 rounded-full border border-white/15 bg-white/[0.04] px-3 py-1.5 text-xs text-white/85 hover:border-cyan-300/40 hover:text-cyan-200"
+            >
+              Profile <ArrowRight className="h-3 w-3" />
+            </Link>
+            <Link
+              to={`/missions/new?agent=${encodeURIComponent(a.category)}`}
+              title={`Start a new mission with ${a.name} pre-selected`}
+              className="group/h relative inline-flex items-center gap-1 overflow-hidden rounded-full px-3 py-1.5 text-xs text-black"
+            >
+              <span className="absolute inset-0 bg-gradient-to-r from-cyan-300 to-purple-300" />
+              <Zap className="relative h-3 w-3" />
+              <span className="relative">Hire</span>
+            </Link>
+          </div>
         </div>
       </div>
     </motion.div>
@@ -362,7 +375,13 @@ function shortPk(pk: string | undefined | null): string {
 }
 
 export default function Marketplace() {
-  const { connected } = useWallet();
+  const { connected, publicKey } = useWallet();
+  const navigate = useNavigate();
+  const walletPk = publicKey?.toBase58() ?? null;
+  const openMission = (missionId: string) => {
+    setActiveMissionIdForWallet(walletPk, missionId);
+    navigate("/agents");
+  };
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("All");
   const [sort, setSort] = useState("Top reputation");
@@ -763,12 +782,16 @@ export default function Marketplace() {
                       No on-chain hires yet
                     </div>
                   ) : recentHires.map((e, i) => (
-                    <motion.div
+                    <motion.button
                       key={e.id}
+                      type="button"
+                      onClick={() => e.who ? openMission(e.who) : undefined}
+                      disabled={!e.who}
+                      title={e.who ? `Open ${e.who} in Agent Workspace` : "Mission id missing"}
                       initial={{ opacity: 0, x: 6 }}
                       animate={{ opacity: 1, x: 0 }}
                       transition={{ delay: i * 0.05 }}
-                      className="flex items-center justify-between rounded-md border border-white/5 bg-white/[0.02] px-2.5 py-1.5 text-[11px]"
+                      className="flex w-full items-center justify-between rounded-md border border-white/5 bg-white/[0.02] px-2.5 py-1.5 text-[11px] text-left transition enabled:hover:border-cyan-300/30 enabled:hover:bg-white/[0.04] disabled:cursor-default"
                     >
                       <div className="flex items-center gap-2 min-w-0">
                         <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ background: e.color, boxShadow: `0 0 6px ${e.color}` }} />
@@ -780,7 +803,7 @@ export default function Marketplace() {
                         <span className="tabular-nums text-emerald-300 text-[10px]">{e.amount.toFixed(3)}</span>
                         <span className="font-mono text-[9px] text-white/30">{formatRelativeTime(e.ts)}</span>
                       </span>
-                    </motion.div>
+                    </motion.button>
                   ))}
                 </div>
               </div>
@@ -812,13 +835,17 @@ export default function Marketplace() {
                 <div className="text-[10px] uppercase tracking-[0.3em] text-white/40">Most Active</div>
                 <div className="mt-2 space-y-1.5">
                   {[...catalog].sort((a, b) => b.missions - a.missions).slice(0, 5).map((a) => (
-                    <div key={a.id} className="flex items-center justify-between rounded-md border border-white/5 bg-white/[0.02] px-2.5 py-1.5 text-[11px]">
+                    <Link
+                      key={a.id}
+                      to={`/marketplace/${a.id}`}
+                      className="flex items-center justify-between rounded-md border border-white/5 bg-white/[0.02] px-2.5 py-1.5 text-[11px] transition hover:border-cyan-300/30 hover:bg-white/[0.04]"
+                    >
                       <span className="flex items-center gap-2">
                         <Flame className="h-3 w-3 text-rose-300" />
                         <span>{a.name}</span>
                       </span>
                       <span className="tabular-nums text-emerald-300">{a.missions} mis.</span>
-                    </div>
+                    </Link>
                   ))}
                   {catalog.length === 0 && (
                     <div className="rounded-md border border-white/5 bg-white/[0.02] px-2.5 py-3 text-center text-[11px] text-white/40">
