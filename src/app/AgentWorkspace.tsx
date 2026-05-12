@@ -12,6 +12,7 @@ import {
   Square, Copy, RotateCcw, Check,
   Paperclip, FileText, FileType,
   Mic, MicOff, Globe,
+  Pencil, Save, WrapText,
 } from "lucide-react";
 import {
   ingestFile,
@@ -80,7 +81,7 @@ import { useAgents, useTasks, useHiveMindRealtime, useMemoryChunks } from "./hoo
 import { publishLocalActivity } from "../lib/agent-activity-bus";
 import { AgentMessageMarkdown } from "./components/agent-message-markdown";
 import { buildArtifactTree, dedupeArtifactsByPath, type ArtifactTreeNode } from "../lib/artifact-tree";
-import { CodeViewer } from "./components/CodeViewer";
+import { CodeEditor } from "./components/CodeEditor";
 import { SandpackProvider, SandpackPreview as SandpackFrame, useSandpack } from "@codesandbox/sandpack-react";
 
 // All agent invocations default to gpt-5.5 (the backend routes Development/Coordination
@@ -1886,6 +1887,116 @@ function AgentWorkspaceMissionBody({
     setAttachments((prev) => prev.filter((a) => a.id !== id));
   }, []);
 
+  // ── Code editor handlers ────────────────────────────────────────────────
+  // Beginning an edit copies the artifact's current content into editorDraft
+  // and pins editorDraftPath so the save handler can detect file switches.
+  const beginEdit = useCallback((art: MissionArtifact | undefined) => {
+    if (!art) return;
+    setEditorDraft(art.content ?? "");
+    setEditorDraftPath(art.path);
+    setEditorMode("edit");
+  }, []);
+
+  const cancelEdit = useCallback(() => {
+    setEditorMode("view");
+    setEditorDraft("");
+    setEditorDraftPath(null);
+  }, []);
+
+  // Save = (1) optimistic local update so Sandpack and the file tree see the
+  // new bytes immediately, (2) background invokeAgentApi call that asks
+  // Development to rewrite the file via the existing persistArtifactUpdates
+  // path so the edit survives a refresh. We don't await the durable hop in
+  // the UI — the local update is the user's visible save.
+  const saveEdit = useCallback(async () => {
+    if (editorMode !== "edit" || !editorDraftPath) return;
+    const target = artifacts.find((a) => a.path === editorDraftPath);
+    if (!target) {
+      toast.error("Couldn't save — file no longer in the artifact tree.");
+      cancelEdit();
+      return;
+    }
+    if ((target.content ?? "") === editorDraft) {
+      cancelEdit();
+      toast.message("No changes to save.");
+      return;
+    }
+    setEditorSaving(true);
+    // Optimistic local commit.
+    setArtifacts((prev) =>
+      prev.map((a) => (a.path === editorDraftPath ? { ...a, content: editorDraft } : a)),
+    );
+    toast.success("Saved locally", { description: "Preview rebuilds with your edit." });
+    setEditorMode("view");
+
+    // Durable persistence via the existing agent pipeline. Asks Development
+    // to write the exact bytes through persistArtifactUpdates so the artifact
+    // store has the user's edit on the next mount.
+    if (apiConfigured()) {
+      const devAgentId = resolveAgentId("Development") ?? resolveAgentId("Strategy");
+      if (devAgentId) {
+        const message = `You are persisting an OPERATOR-AUTHORED edit. The operator hand-edited a file in the workspace and pressed Save. Write the file EXACTLY as provided below — do not modify, refactor, summarize, or comment on the contents.
+
+Respond with ONE JSON object only:
+{
+  "assistantReply": "Persisted operator edit to ${editorDraftPath}",
+  "fileUpdates": [
+    { "path": ${JSON.stringify(editorDraftPath)}, "language": ${JSON.stringify(target.language ?? "")}, "content": ${JSON.stringify(editorDraft)} }
+  ]
+}
+
+The content field above is the COMPLETE new file body. Echo it back verbatim.`;
+        try {
+          const res = await invokeAgentApi(devAgentId, {
+            message,
+            missionId: mission.id,
+            persistArtifactUpdates: true,
+            includeArtifacts: false,
+          });
+          if (!res.ok || (res.artifactPathsApplied?.length ?? 0) === 0) {
+            toast.warning("Local save kept, but server persist didn't confirm", {
+              description: "Re-run will re-write the file from scratch — edit again if needed.",
+              duration: 10_000,
+            });
+          }
+        } catch {
+          /* swallow — local copy already reflects */
+        }
+      }
+    }
+    setEditorSaving(false);
+    setEditorDraftPath(null);
+    setEditorDraft("");
+  }, [editorMode, editorDraftPath, editorDraft, artifacts, mission.id, cancelEdit]);
+
+  const downloadArtifact = useCallback((art: MissionArtifact | undefined) => {
+    if (!art) return;
+    const blob = new Blob([art.content ?? ""], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = art.path.split("/").pop() || "file.txt";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  // Switching to a different artifact while editing must not lose the
+  // current draft silently. If there are unsaved changes, drop back to view
+  // mode so the user has to explicitly save or cancel.
+  useEffect(() => {
+    if (editorMode !== "edit") return;
+    if (editorDraftPath && selectedArtifactId) {
+      const sel = artifacts.find((a) => a.id === selectedArtifactId);
+      if (sel && sel.path !== editorDraftPath) {
+        toast.message("Discarded unsaved edit", { description: `Switched files away from ${editorDraftPath}.` });
+        cancelEdit();
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedArtifactId]);
+
   // Composer toggles — research mode prepends a research-thinking prefix to
   // the agent prompt (the underlying LLMs don't actually fetch live web
   // pages, but the prefix asks them to be thorough, cite, and flag claims
@@ -1946,6 +2057,17 @@ function AgentWorkspaceMissionBody({
   const [artifactsLoading, setArtifactsLoading] = useState(true);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [collapsedArtifactFolders, setCollapsedArtifactFolders] = useState<Set<string>>(new Set());
+
+  // Code panel editor state — independent from `artifacts` so the user can
+  // type freely without re-triggering Sandpack bundles on every keystroke.
+  // Local edits commit to `artifacts` only on Save, and a separate background
+  // pass asks Development to rewrite the file via the existing persist-
+  // artifact-updates pipeline so the change is durable across sessions.
+  const [editorMode, setEditorMode] = useState<"view" | "edit">("view");
+  const [editorDraft, setEditorDraft] = useState<string>("");
+  const [editorDraftPath, setEditorDraftPath] = useState<string | null>(null);
+  const [editorSaving, setEditorSaving] = useState(false);
+  const [editorWrap, setEditorWrap] = useState(false);
   const [zipDownloading, setZipDownloading] = useState(false);
   const [previewStarting, setPreviewStarting] = useState(false);
   const [previewAutoFixing, setPreviewAutoFixing] = useState(false);
@@ -4342,26 +4464,110 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                           </div>
                         );
                       }
+                      const editing = editorMode === "edit" && editorDraftPath === a.path;
+                      const editorValue = editing ? editorDraft : (a.content ?? "");
+                      const dirty = editing && editorValue !== (a.content ?? "");
                       return (
                           <div className="flex h-full max-h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-black/55">
                             <div className="flex items-center justify-between gap-2 border-b border-white/5 px-3 py-2">
                               <div className="min-w-0">
-                                <div className="truncate font-mono text-[11px] text-white/75">{a.path}</div>
+                                <div className="flex items-center gap-1.5 truncate font-mono text-[11px] text-white/75">
+                                  <span className="truncate">{a.path}</span>
+                                  {editing && (
+                                    <span
+                                      className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] uppercase tracking-[0.2em] ${
+                                        dirty
+                                          ? "border border-amber-300/30 bg-amber-300/10 text-amber-200"
+                                          : "border border-cyan-300/30 bg-cyan-300/10 text-cyan-200"
+                                      }`}
+                                    >
+                                      {dirty ? "modified" : "editing"}
+                                    </span>
+                                  )}
+                                </div>
                                 <div className="text-[10px] text-white/35">{a.agent} · {a.role} · {a.language ?? a.kind}</div>
                               </div>
-                              <button
-                                type="button"
-                                onClick={() => void navigator.clipboard.writeText(a.content)}
-                                className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px] text-white/75 hover:border-cyan-300/30"
-                              >
-                                Copy
-                              </button>
+                              <div className="flex shrink-0 items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => setEditorWrap((v) => !v)}
+                                  title={editorWrap ? "Disable word wrap" : "Enable word wrap"}
+                                  aria-label="Toggle word wrap"
+                                  aria-pressed={editorWrap}
+                                  className={`rounded-md border p-1 transition ${
+                                    editorWrap
+                                      ? "border-cyan-300/30 bg-cyan-300/10 text-cyan-100"
+                                      : "border-white/10 bg-white/[0.04] text-white/65 hover:border-cyan-300/30 hover:text-cyan-200"
+                                  }`}
+                                >
+                                  <WrapText className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => downloadArtifact(a)}
+                                  title="Download file"
+                                  aria-label="Download file"
+                                  className="rounded-md border border-white/10 bg-white/[0.04] p-1 text-white/65 hover:border-cyan-300/30 hover:text-cyan-200"
+                                >
+                                  <Download className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    void navigator.clipboard.writeText(a.content ?? "");
+                                    toast.success("Copied");
+                                  }}
+                                  title="Copy file contents"
+                                  aria-label="Copy file contents"
+                                  className="rounded-md border border-white/10 bg-white/[0.04] p-1 text-white/65 hover:border-cyan-300/30 hover:text-cyan-200"
+                                >
+                                  <Copy className="h-3.5 w-3.5" />
+                                </button>
+                                {editing ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={cancelEdit}
+                                      disabled={editorSaving}
+                                      title="Cancel edit (discards changes)"
+                                      className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px] text-white/75 hover:border-white/25 disabled:opacity-50"
+                                    >
+                                      Cancel
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => void saveEdit()}
+                                      disabled={editorSaving || !dirty}
+                                      title="Save edit (⌘S / Ctrl+S)"
+                                      className="inline-flex items-center gap-1 rounded-md bg-gradient-to-r from-emerald-300 to-cyan-300 px-2.5 py-1 text-[11px] font-medium text-black disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      {editorSaving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+                                      Save
+                                    </button>
+                                  </>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => beginEdit(a)}
+                                    title="Edit file"
+                                    aria-label="Edit file"
+                                    className="inline-flex items-center gap-1 rounded-md border border-cyan-300/35 bg-cyan-300/10 px-2.5 py-1 text-[11px] text-cyan-100 hover:bg-cyan-300/20"
+                                  >
+                                    <Pencil className="h-3 w-3" />
+                                    Edit
+                                  </button>
+                                )}
+                              </div>
                             </div>
-                            <div className="min-h-0 min-w-0 flex-1 overflow-auto">
-                              <CodeViewer
-                                content={a.content}
+                            <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+                              <CodeEditor
+                                value={editorValue}
                                 path={a.path}
                                 language={a.language}
+                                editable={editing}
+                                wrap={editorWrap}
+                                onChange={editing ? setEditorDraft : () => undefined}
+                                onCmdS={editing ? () => void saveEdit() : undefined}
                               />
                             </div>
                           </div>
