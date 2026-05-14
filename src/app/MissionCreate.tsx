@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router";
-import { useWallet } from "@solana/wallet-adapter-react";
+import { useWallet, useConnection } from "@solana/wallet-adapter-react";
+import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { toast } from "sonner";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -47,6 +48,25 @@ const priorities = [
   { key: "high", label: "High", desc: "Prioritized routing", color: "#a855f7", glow: "rgba(168,85,247,0.6)" },
   { key: "crit", label: "Critical", desc: "All agents engaged", color: "#ef4444", glow: "rgba(239,68,68,0.7)" },
 ];
+
+/** Soft client-side tracker for free credit consumption. We deliberately do
+ *  NOT burn the on-chain user_trial slot — a free credit should not require a
+ *  wallet popup or any devnet SOL. The on-chain count acts as a hard ceiling
+ *  (read on connect), and per-wallet localStorage tracks how many have been
+ *  consumed locally. UI surfaces `usesRemaining - localUsed`. */
+const FREE_USES_KEY = (wallet: string) => `hm-free-uses-local:${wallet}`;
+function readLocalFreeUses(wallet: string | null): number {
+  if (!wallet || typeof window === "undefined") return 0;
+  const raw = localStorage.getItem(FREE_USES_KEY(wallet));
+  if (!raw) return 0;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+function incLocalFreeUses(wallet: string | null): void {
+  if (!wallet || typeof window === "undefined") return;
+  const next = readLocalFreeUses(wallet) + 1;
+  localStorage.setItem(FREE_USES_KEY(wallet), String(next));
+}
 
 const allAgents = [
   { name: "Strategy", model: "Claude 4.7", spec: "Planning · KPIs", rep: 4.92, perf: 98, color: "#22d3ee", default: true },
@@ -335,18 +355,52 @@ export default function MissionCreate() {
   const { create } = useMissions();
   const [launching, setLaunching] = useState(false);
   const [freeCredits, setFreeCredits] = useState<number | null>(null);
+  const [solBalance, setSolBalance] = useState<number | null>(null);
   const { connected, publicKey } = useWallet();
+  const { connection } = useConnection();
   const { signingIn, signIn } = useWalletBackendAuth();
-  const { pay: payOnChain, useCredit: useCreditOnChain } = useMissionPayment();
+  const { pay: payOnChain } = useMissionPayment();
   const walletPk = publicKey?.toBase58() ?? null;
 
-  // Load free credit balance on wallet connect
+  // Load free credit balance on wallet connect. Apply any locally-tracked uses
+  // (we no longer burn a free credit on-chain — the user shouldn't have to sign
+  // a tx just to spend a free credit — so we soft-track consumption per wallet
+  // in localStorage capped at the on-chain `usesRemaining` value.)
   useEffect(() => {
     if (!walletPk || !apiConfigured()) return;
     fetchTrialStatus(walletPk)
-      .then((s) => { if (s?.registered) setFreeCredits(s.usesRemaining); })
+      .then((s) => {
+        if (!s?.registered) return;
+        const localUsed = readLocalFreeUses(walletPk);
+        setFreeCredits(Math.max(0, s.usesRemaining - localUsed));
+      })
       .catch(() => null);
   }, [walletPk]);
+
+  // Live devnet SOL balance — used to gate the Launch (paid) button so we
+  // can show a clear "not enough SOL" toast instead of letting the wallet
+  // crash with "Cannot destructure property 'err'…" mid-simulation.
+  const refreshBalance = useCallback(async () => {
+    if (!publicKey) return;
+    try {
+      const lam = await connection.getBalance(publicKey, "confirmed");
+      setSolBalance(lam / LAMPORTS_PER_SOL);
+    } catch {
+      // Non-fatal — leaves solBalance as previous value; UI falls back to soft check.
+    }
+  }, [publicKey, connection]);
+  useEffect(() => {
+    if (!connected || !publicKey) {
+      setSolBalance(null);
+      return;
+    }
+    refreshBalance();
+  }, [connected, publicKey, refreshBalance]);
+
+  // 0.002 SOL covers fee + create_mission PDA rent with headroom.
+  const FEE_RENT_BUFFER_SOL = 0.002;
+  const hasEnoughSol =
+    solBalance === null ? true : solBalance >= budget + FEE_RENT_BUFFER_SOL;
 
   const launch = async (mode: "sol" | "free") => {
     if (!prompt.trim() || selected.length === 0 || launching) return;
@@ -379,20 +433,52 @@ export default function MissionCreate() {
 
       // 3. Payment: free credit or SOL
       if (mode === "free") {
-        toast.message("Using free credit", { description: "Approve the on-chain transaction to burn one free credit." });
-        const creditResult = await useCreditOnChain();
-        if (!creditResult.ok) {
-          toast.error("Free credit failed", { description: creditResult.error });
+        // Free credit is truly free — no wallet popup, no on-chain tx, no SOL
+        // needed. We just notify the backend (broadcasts a "credit used" toast
+        // for the live feed) and bump our local consumption counter; the next
+        // refresh of fetchTrialStatus will subtract localUsed from the
+        // on-chain max.
+        if (!freeCredits || freeCredits <= 0) {
+          toast.error("No free credits remaining", {
+            description: "You've used all your free missions. Top up your wallet with devnet SOL to keep launching.",
+          });
           return;
         }
-        // Notify backend to decrement count
-        if (walletPk) await postTrialUse(walletPk).catch(() => null);
+        if (walletPk) {
+          incLocalFreeUses(walletPk);
+          await postTrialUse(walletPk).catch(() => null);
+        }
         setFreeCredits((c) => (c !== null ? Math.max(0, c - 1) : null));
-        // Notify sidebar + TrialBanner to re-fetch on-chain status (cap decrements live).
         window.dispatchEvent(new CustomEvent("hm-trial-status-changed", { detail: { wallet: walletPk } }));
-        toast.success("Free credit used", { description: `tx ${creditResult.signature.slice(0, 8)}…` });
+        toast.success("Free credit redeemed", {
+          description: `Launching mission · ${(freeCredits ? freeCredits - 1 : 0)} credit(s) left.`,
+        });
       } else {
-        // Charge the full budget amount — that IS what goes into the mission escrow
+        // Pre-flight balance check. We must NEVER pop the wallet for a
+        // transfer the user can't cover — Backpack's own simulation surfaces a
+        // misleading "Cannot destructure property 'err' of 'r' as it is
+        // undefined" toast that leaves our UI stuck on "Processing…". Catch it
+        // here with a clear toast pointing at the free-credit alternative.
+        let liveBalance = solBalance;
+        try {
+          if (publicKey) {
+            const lam = await connection.getBalance(publicKey, "confirmed");
+            liveBalance = lam / LAMPORTS_PER_SOL;
+            setSolBalance(liveBalance);
+          }
+        } catch {
+          // network flake — fall through and let payOnChain handle it
+        }
+        if (liveBalance !== null && liveBalance < budget + FEE_RENT_BUFFER_SOL) {
+          const haveStr = liveBalance.toFixed(4);
+          const needStr = (budget + FEE_RENT_BUFFER_SOL).toFixed(3);
+          toast.error("Not enough SOL", {
+            description: `Wallet has ${haveStr} SOL, mission needs ${needStr} SOL.${freeCredits && freeCredits > 0 ? ' Tap "Use Free Credit" instead, or top up your wallet.' : " Top up your wallet from a devnet faucet and retry."}`,
+            duration: 8000,
+          });
+          return;
+        }
+
         toast.message("Approve transaction", {
           description: `Sending ${budget.toFixed(3)} SOL to mission escrow on Solana devnet.`,
         });
@@ -401,6 +487,8 @@ export default function MissionCreate() {
           toast.error("Payment failed", { description: payResult.error });
           return;
         }
+        // Refresh balance so the gating updates if the user re-tries another mission.
+        refreshBalance();
         toast.success("Payment confirmed", {
           description: `${budget.toFixed(3)} SOL deposited · tx ${payResult.signature.slice(0, 8)}…`,
         });
@@ -1187,29 +1275,41 @@ export default function MissionCreate() {
 
                     {/* CTA */}
                     <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-white/10 pt-5">
-                      <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.25em] text-white/40">
-                        <Network className="h-3.5 w-3.5 text-cyan-300" />
-                        Orchestrator ready · awaiting authorization
+                      <div className="flex flex-col gap-1 text-[11px] uppercase tracking-[0.25em] text-white/40">
+                        <div className="flex items-center gap-2">
+                          <Network className="h-3.5 w-3.5 text-cyan-300" />
+                          Orchestrator ready · awaiting authorization
+                        </div>
+                        {connected && solBalance !== null && (
+                          <div className={`flex items-center gap-1.5 normal-case tracking-normal ${hasEnoughSol ? "text-white/40" : "text-amber-300/90"}`}>
+                            <Wallet className="h-3 w-3" />
+                            <span>Wallet balance: {solBalance.toFixed(4)} SOL · need {budget.toFixed(3)} SOL</span>
+                          </div>
+                        )}
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
-                        {/* Free credit badge + button */}
+                        {/* Free credit badge + button — truly free, no wallet popup */}
                         {freeCredits !== null && freeCredits > 0 && (
                           <button
                             onClick={() => void launch("free")}
                             disabled={!prompt.trim() || selected.length === 0 || launching}
                             className="inline-flex items-center gap-2 rounded-full border border-cyan-300/30 bg-cyan-300/10 px-5 py-2.5 text-sm text-cyan-100 hover:bg-cyan-300/20 disabled:opacity-50"
+                            title="Launches without a wallet popup — no SOL required."
                           >
                             <Zap className="h-4 w-4 text-cyan-300" />
                             Use Free Credit
                             <span className="rounded-full bg-cyan-300/20 px-1.5 py-0.5 text-[10px] font-bold text-cyan-300">
-                              {freeCredits}/5
+                              {freeCredits} left
                             </span>
                           </button>
                         )}
                         <button
                           onClick={() => void launch("sol")}
-                          disabled={!prompt.trim() || selected.length === 0 || launching}
-                          className="group relative inline-flex items-center gap-2 overflow-hidden rounded-full px-6 py-2.5 text-sm text-black disabled:opacity-50"
+                          disabled={!prompt.trim() || selected.length === 0 || launching || (connected && !hasEnoughSol)}
+                          className="group relative inline-flex items-center gap-2 overflow-hidden rounded-full px-6 py-2.5 text-sm text-black disabled:cursor-not-allowed disabled:opacity-50"
+                          title={connected && !hasEnoughSol
+                            ? `Not enough SOL: wallet has ${solBalance?.toFixed(4) ?? "0"} SOL, need ${budget.toFixed(3)} SOL${freeCredits && freeCredits > 0 ? '. Use Free Credit instead.' : '.'}`
+                            : undefined}
                         >
                           <span className="absolute inset-0 bg-gradient-to-r from-cyan-300 via-white to-purple-300" />
                           <span className="absolute -inset-1 rounded-full bg-cyan-400/40 blur-xl opacity-60 group-hover:opacity-90 transition" />

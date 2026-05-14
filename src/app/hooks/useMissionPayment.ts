@@ -39,7 +39,12 @@ function getMissionPda(missionId: bigint): PublicKey {
  */
 function humanizeWalletError(raw: string): string {
   const lower = raw.toLowerCase();
-  // Wallet simulation failed → almost always the network mismatch.
+  // Insufficient lamports comes back from the wallet too — surface the friendly
+  // "use free credit / top up" hint before falling into the generic
+  // "simulation failed" branch, which would mis-classify it as a network issue.
+  if (lower.includes("insufficient lamports") || lower.includes("insufficient funds")) {
+    return 'Insufficient devnet SOL for this mission. Use the "Use Free Credit" button below instead, or top up your wallet from a devnet faucet and retry.';
+  }
   if (
     lower.includes("simulation failed") ||
     lower.includes("simulate failed") ||
@@ -49,13 +54,45 @@ function humanizeWalletError(raw: string): string {
   ) {
     return "Wallet simulation failed — switch your wallet to Devnet. HiveMind runs on Solana devnet; if your wallet (Backpack / Phantom) is on Mainnet, every signature will fail. Open the wallet settings → Network → Devnet, then retry.";
   }
-  if (lower.includes("insufficient") || lower.includes("0x1")) {
-    return "Insufficient devnet SOL for the transaction fee. The auto-funder will top you up after a brief delay, or send any small amount of devnet SOL to your wallet manually.";
+  if (lower.includes("0x1")) {
+    return 'Transaction failed: insufficient devnet SOL. Use the "Use Free Credit" button or top up your wallet from a devnet faucet.';
   }
   if (lower.includes("blockhash") || lower.includes("expired")) {
     return "Network blockhash expired — retry the transaction.";
   }
   return raw;
+}
+
+/** Parse `Transfer: insufficient lamports N, need M` from program logs. */
+function parseInsufficientLamports(logs: string[]): { have: bigint; need: bigint } | null {
+  for (const l of logs) {
+    const m = l.match(/insufficient lamports (\d+),\s*need (\d+)/i);
+    if (m) {
+      try {
+        return { have: BigInt(m[1]), need: BigInt(m[2]) };
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+function lamportsToSolStr(lamports: bigint, digits = 4): string {
+  return (Number(lamports) / LAMPORTS_PER_SOL).toFixed(digits);
+}
+
+/** Race a promise against a timer so a hung wallet popup (Backpack sometimes
+ *  swallows rejections and never resolves the sendTransaction promise after a
+ *  failed simulation) doesn't leave the UI stuck on "Processing…" forever. */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label} timed out — close the wallet popup and retry.`)), ms);
+    p.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); },
+    );
+  });
 }
 
 export type MissionPaymentResult =
@@ -78,6 +115,26 @@ export function useMissionPayment() {
     const lamports = BigInt(Math.round(solAmount * LAMPORTS_PER_SOL));
     if (lamports <= 0n) {
       return { ok: false, error: "Invalid payment amount." };
+    }
+
+    // Pre-flight balance check. Catches the common "wallet has 0.002 SOL but
+    // the mission costs 6 SOL" case BEFORE we pop the wallet — otherwise the
+    // user sees a cryptic "Transfer: insufficient lamports" log instead of a
+    // hint that the Use Free Credit button next to Launch would have worked.
+    // 0.002 SOL buffer covers tx fee + create_mission PDA rent.
+    const FEE_RENT_BUFFER = 2_000_000n;
+    try {
+      const balanceRaw = await connection.getBalance(publicKey);
+      const balance = BigInt(balanceRaw);
+      const required = lamports + FEE_RENT_BUFFER;
+      if (balance < required) {
+        return {
+          ok: false,
+          error: `Insufficient devnet SOL: wallet has ${lamportsToSolStr(balance)} SOL, mission needs ${lamportsToSolStr(required, 3)} SOL. Tap "Use Free Credit" instead, or top up your wallet from a devnet faucet and retry.`,
+        };
+      }
+    } catch {
+      // Balance fetch failure is non-fatal — simulation below will surface the real error.
     }
 
     // Use current timestamp as unique u64 mission ID for the on-chain PDA
@@ -127,11 +184,23 @@ export function useMissionPayment() {
       // "simulation failed" that fires when the user's wallet is on mainnet.
       const preSim = await connection.simulateTransaction(tx).catch(() => null);
       if (preSim?.value.err) {
-        const logs = (preSim.value.logs ?? []).slice(-4).join(" · ").slice(0, 280);
-        return { ok: false, error: `Devnet simulation failed: ${JSON.stringify(preSim.value.err)}${logs ? ` · ${logs}` : ""}` };
+        const logs = preSim.value.logs ?? [];
+        // Specific, user-fixable case: the program logs include
+        //   "Transfer: insufficient lamports N, need M"
+        // Parse the actual numbers and tell the user exactly how much they
+        // have / need, and that Use Free Credit is right there.
+        const insufficient = parseInsufficientLamports(logs);
+        if (insufficient) {
+          return {
+            ok: false,
+            error: `Insufficient devnet SOL: wallet has ${lamportsToSolStr(insufficient.have)} SOL, mission needs ${lamportsToSolStr(insufficient.need, 3)} SOL. Tap "Use Free Credit" instead, or top up your wallet from a devnet faucet and retry.`,
+          };
+        }
+        const logTail = logs.slice(-4).join(" · ").slice(0, 280);
+        return { ok: false, error: `Devnet simulation failed: ${JSON.stringify(preSim.value.err)}${logTail ? ` · ${logTail}` : ""}` };
       }
 
-      const signature = await sendTransaction(tx, connection);
+      const signature = await withTimeout(sendTransaction(tx, connection), 90_000, "Wallet signature");
       await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
 
       return { ok: true, signature, missionOnChainId };
@@ -191,7 +260,7 @@ export function useMissionPayment() {
         return { ok: false, error: `Devnet simulation failed: ${errStr}${logs ? ` · ${logs}` : ""}` };
       }
 
-      const signature = await sendTransaction(tx, connection);
+      const signature = await withTimeout(sendTransaction(tx, connection), 90_000, "Wallet signature");
       await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
       return { ok: true, signature };
     } catch (err: unknown) {
