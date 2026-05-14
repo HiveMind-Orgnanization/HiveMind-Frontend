@@ -24,6 +24,40 @@ function getMissionPda(missionId: bigint): PublicKey {
   return pda;
 }
 
+/**
+ * Map a wallet-side error string into a user-friendly message.
+ *
+ * The big trap: Backpack (+ Phantom etc.) default to Mainnet. HiveMind runs
+ * on Solana devnet — when the dApp sends a tx with the EV447F… program id
+ * and the wallet is on mainnet, the wallet's own simulation reports
+ * "Transaction simulation failed" because the program + PDAs don't exist on
+ * mainnet. Users see a cryptic error inside the wallet popup with no hint
+ * about the network mismatch.
+ *
+ * We detect that pattern here and surface a one-liner that tells the user
+ * to switch their wallet to Devnet.
+ */
+function humanizeWalletError(raw: string): string {
+  const lower = raw.toLowerCase();
+  // Wallet simulation failed → almost always the network mismatch.
+  if (
+    lower.includes("simulation failed") ||
+    lower.includes("simulate failed") ||
+    lower.includes("accountnotfound") ||
+    lower.includes("account not found") ||
+    lower.includes("programaccountnotfound")
+  ) {
+    return "Wallet simulation failed — switch your wallet to Devnet. HiveMind runs on Solana devnet; if your wallet (Backpack / Phantom) is on Mainnet, every signature will fail. Open the wallet settings → Network → Devnet, then retry.";
+  }
+  if (lower.includes("insufficient") || lower.includes("0x1")) {
+    return "Insufficient devnet SOL for the transaction fee. The auto-funder will top you up after a brief delay, or send any small amount of devnet SOL to your wallet manually.";
+  }
+  if (lower.includes("blockhash") || lower.includes("expired")) {
+    return "Network blockhash expired — retry the transaction.";
+  }
+  return raw;
+}
+
 export type MissionPaymentResult =
   | { ok: true; signature: string; missionOnChainId: bigint }
   | { ok: false; error: string };
@@ -87,17 +121,26 @@ export function useMissionPayment() {
       tx.recentBlockhash = blockhash;
       tx.feePayer = publicKey;
 
+      // Pre-simulate on OUR devnet connection so we can surface real errors
+      // (insufficient funds, program reverts, exhausted credits) with the
+      // actual program log lines — instead of the wallet's generic
+      // "simulation failed" that fires when the user's wallet is on mainnet.
+      const preSim = await connection.simulateTransaction(tx).catch(() => null);
+      if (preSim?.value.err) {
+        const logs = (preSim.value.logs ?? []).slice(-4).join(" · ").slice(0, 280);
+        return { ok: false, error: `Devnet simulation failed: ${JSON.stringify(preSim.value.err)}${logs ? ` · ${logs}` : ""}` };
+      }
+
       const signature = await sendTransaction(tx, connection);
       await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
 
       return { ok: true, signature, missionOnChainId };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      // User rejected the transaction in wallet
       if (msg.includes("User rejected") || msg.includes("rejected")) {
         return { ok: false, error: "Transaction cancelled by user." };
       }
-      return { ok: false, error: msg };
+      return { ok: false, error: humanizeWalletError(msg) };
     }
   };
 
@@ -129,6 +172,25 @@ export function useMissionPayment() {
       const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
       tx.recentBlockhash = blockhash;
       tx.feePayer = publicKey;
+
+      // Pre-simulate on our devnet connection. If THIS fails the program
+      // logs tell us exactly why (trial exhausted, account missing, etc.).
+      // If it succeeds but the wallet still rejects with simulation failure,
+      // humanizeWalletError() flags the network mismatch to the user.
+      const preSim = await connection.simulateTransaction(tx).catch(() => null);
+      if (preSim?.value.err) {
+        const logs = (preSim.value.logs ?? []).slice(-4).join(" · ").slice(0, 280);
+        const errStr = JSON.stringify(preSim.value.err);
+        // Anchor's TrialExhausted error code is 6003 → InstructionError [_, {Custom: 6003}]
+        if (errStr.includes("6003")) {
+          return { ok: false, error: "Free trial exhausted — no uses remaining. Pay with devnet SOL or claim a daily credit." };
+        }
+        if (errStr.includes("6005") || errStr.toLowerCase().includes("accountnotfound")) {
+          return { ok: false, error: "Wallet not registered for the free trial yet. Reconnect the wallet so HiveMind can auto-register, then retry." };
+        }
+        return { ok: false, error: `Devnet simulation failed: ${errStr}${logs ? ` · ${logs}` : ""}` };
+      }
+
       const signature = await sendTransaction(tx, connection);
       await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
       return { ok: true, signature };
@@ -137,7 +199,7 @@ export function useMissionPayment() {
       if (msg.includes("User rejected") || msg.includes("rejected")) {
         return { ok: false, error: "Transaction cancelled by user." };
       }
-      return { ok: false, error: msg };
+      return { ok: false, error: humanizeWalletError(msg) };
     }
   };
 
