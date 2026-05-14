@@ -2341,7 +2341,13 @@ function AgentWorkspaceMissionBody({
             const lastResult = progress.partialResults[progress.partialResults.length - 1];
             setMessages((prev) => prev.map((msg) => {
               if (msg.id !== hmId) return msg;
+              // Retire the bootstrap placeholder once real progress lands.
               let thoughts = (msg.thoughts ?? []).map((t) =>
+                t.agent === "HiveMind" && !t.done
+                  ? { ...t, text: "Mission brief ready · routing to specialist agents.", done: true }
+                  : t,
+              );
+              thoughts = thoughts.map((t) =>
                 !t.done && lastResult && t.agent === lastResult.role
                   ? {
                       ...t,
@@ -3169,7 +3175,20 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
           text: "",
           state: "thinking",
           kind: "hivemind_swarm",
-          thoughts: [],
+          // Seed an "Initializing…" thought so the user sees activity immediately
+          // instead of staring at three dots for 10-30s while the backend
+          // generates the mission brief (an LLM call that fires BEFORE the
+          // first role's setCurrentRole). The first real progress event will
+          // mark this as done and append the actual first role.
+          thoughts: [
+            {
+              agent: "HiveMind",
+              color: "#22d3ee",
+              text: "Bootstrapping the swarm — generating the mission brief and routing agents…",
+              ts,
+              done: false,
+            },
+          ],
           ts,
         },
       ]);
@@ -3216,7 +3235,16 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
 
             setMessages((prev) => prev.map((msg) => {
               if (msg.id !== hmId) return msg;
+              // First real progress event arrived — retire the "HiveMind"
+              // bootstrap placeholder so it doesn't sit forever next to the
+              // real role thoughts. (Kept as a tiny "Brief ready" line so the
+              // user can see the bootstrap step finished, not vanish.)
               let thoughts = (msg.thoughts ?? []).map((t) =>
+                t.agent === "HiveMind" && !t.done
+                  ? { ...t, text: "Mission brief ready · routing to specialist agents.", done: true }
+                  : t,
+              );
+              thoughts = thoughts.map((t) =>
                 !t.done && lastResult && t.agent === lastResult.role
                   ? {
                       ...t,
