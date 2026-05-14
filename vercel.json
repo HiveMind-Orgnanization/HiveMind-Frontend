@@ -8,7 +8,7 @@
     { "source": "/preview/:sessionId",   "destination": "http://hivemind-backend-prod.eba-2pwjk2c2.ap-south-1.elasticbeanstalk.com/preview/:sessionId/" },
     { "source": "/preview/:sessionId/",  "destination": "http://hivemind-backend-prod.eba-2pwjk2c2.ap-south-1.elasticbeanstalk.com/preview/:sessionId/" },
     { "source": "/preview/:sessionId/:path*", "destination": "http://hivemind-backend-prod.eba-2pwjk2c2.ap-south-1.elasticbeanstalk.com/preview/:sessionId/:path*" },
-    { "source": "/(.*)",       "destination": "/index.html" }
+    { "source": "/((?!assets/).*)", "destination": "/index.html" }
   ],
   "headers": [
     {
