@@ -81,6 +81,7 @@ import { useAgents, useTasks, useHiveMindRealtime, useMemoryChunks } from "./hoo
 import { publishLocalActivity } from "../lib/agent-activity-bus";
 import { AgentMessageMarkdown } from "./components/agent-message-markdown";
 import { buildArtifactTree, dedupeArtifactsByPath, type ArtifactTreeNode } from "../lib/artifact-tree";
+import { parseStreamingArtifact } from "../lib/streaming-artifact-parser";
 import { SandpackProvider, SandpackPreview as SandpackFrame, useSandpack } from "@codesandbox/sandpack-react";
 
 // All agent invocations default to gpt-5.5 (the backend routes Development/Coordination
@@ -2012,6 +2013,14 @@ function AgentWorkspaceMissionBody({
   const [artifacts, setArtifacts] = useState<MissionArtifact[]>([]);
   const [artifactsLoading, setArtifactsLoading] = useState(true);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
+  /**
+   * Live LLM streaming buffer parsed into "file being written right now".
+   * Populated from SwarmProgress.streamingReply via the onProgress callback;
+   * the code panel prefers this over the selected DB artifact when present so
+   * the user watches the file appear character-by-character. Cleared when the
+   * current role finishes or the swarm ends.
+   */
+  const [streamingArtifact, setStreamingArtifact] = useState<{ path: string; content: string; role: string; completed: boolean } | null>(null);
   const [collapsedArtifactFolders, setCollapsedArtifactFolders] = useState<Set<string>>(new Set());
 
   const [zipDownloading, setZipDownloading] = useState(false);
@@ -2340,6 +2349,22 @@ function AgentWorkspaceMissionBody({
             if (cancelled) return;
             const progressTs = new Date().toLocaleTimeString("en-US", { hour12: false });
             const lastResult = progress.partialResults[progress.partialResults.length - 1];
+            // Mirror live-coding state on the resume path too — if the user
+            // navigated back into a mid-stream Development role, they should
+            // still see the file being written in real time.
+            if (progress.streamingReply) {
+              const parsed = parseStreamingArtifact(progress.streamingReply.buffer);
+              if (parsed) {
+                setStreamingArtifact({
+                  path: parsed.path,
+                  content: parsed.content,
+                  role: progress.streamingReply.role,
+                  completed: parsed.completed,
+                });
+              }
+            } else {
+              setStreamingArtifact(null);
+            }
             setMessages((prev) => prev.map((msg) => {
               if (msg.id !== hmId) return msg;
               // Retire the bootstrap placeholder once real progress lands.
@@ -2379,6 +2404,7 @@ function AgentWorkspaceMissionBody({
         });
         if (cancelled) return;
         setAutoInvoking(false);
+        setStreamingArtifact(null);
         markJobFinished(mission.id);
         if (!swarm.ok) {
           setMessages((prev) => prev.map((m) =>
@@ -3218,6 +3244,24 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
             const progressTs = new Date().toLocaleTimeString("en-US", { hour12: false });
             const lastResult = progress.partialResults[progress.partialResults.length - 1];
 
+            // Live-coding effect: parse the LLM's in-flight buffer into the
+            // file path + partial content the model is currently writing,
+            // and surface it in the code panel. Cleared when streamingReply
+            // is absent (between roles / after the last role completes).
+            if (progress.streamingReply) {
+              const parsed = parseStreamingArtifact(progress.streamingReply.buffer);
+              if (parsed) {
+                setStreamingArtifact({
+                  path: parsed.path,
+                  content: parsed.content,
+                  role: progress.streamingReply.role,
+                  completed: parsed.completed,
+                });
+              }
+            } else {
+              setStreamingArtifact(null);
+            }
+
             // Mirror swarm progress to the local bus so Live Console streams
             // even when the WS hop is broken (Vercel→EB has no WS proxy).
             if (lastResult) {
@@ -3287,6 +3331,7 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
       );
 
       setAutoInvoking(false);
+      setStreamingArtifact(null);
       // Swarm finished one way or the other — clear the tracked job record so
       // remounts don't try to resume polling a job that has already terminated.
       markSwarmFinished(mission.id);
@@ -4394,8 +4439,26 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                     </div>
                     {/* Code viewer panel */}
                     {(() => {
-                      const a = artifacts.find((x) => x.id === selectedArtifactId) ?? artifacts[0];
-                      if (artifactsLoading) {
+                      // Live-coding mode: when the swarm is streaming a file
+                      // RIGHT NOW, hijack the panel to show the in-flight buffer
+                      // instead of the previously-selected DB artifact. The DB
+                      // version will replace it as soon as pushProgress lands.
+                      const streamingA: MissionArtifact | null = streamingArtifact
+                        ? {
+                            id: `streaming:${streamingArtifact.role}:${streamingArtifact.path}`,
+                            missionId: mission.id,
+                            wallet: walletPk ?? "",
+                            agent: streamingArtifact.role,
+                            role: streamingArtifact.role,
+                            kind: "file",
+                            path: streamingArtifact.path,
+                            language: streamingArtifact.path.split(".").pop(),
+                            content: streamingArtifact.content,
+                            createdAt: Date.now(),
+                          }
+                        : null;
+                      const a = streamingA ?? artifacts.find((x) => x.id === selectedArtifactId) ?? artifacts[0];
+                      if (artifactsLoading && !streamingA) {
                         return (
                           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-white/[0.06] bg-gradient-to-b from-black/45 to-black/30">
                             {/* Skeleton header */}
@@ -4439,12 +4502,25 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                           </div>
                         );
                       }
+                      const isStreaming = Boolean(streamingA);
                       return (
-                          <div className="flex h-full max-h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-black/55">
+                          <div className={`flex h-full max-h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border bg-black/55 ${isStreaming ? "border-cyan-300/40 shadow-[0_0_0_1px_rgba(34,211,238,0.18),0_0_45px_-12px_rgba(34,211,238,0.4)]" : "border-white/[0.08]"}`}>
                             <div className="flex items-center justify-between gap-2 border-b border-white/5 px-3 py-2">
                               <div className="min-w-0">
-                                <div className="truncate font-mono text-[11px] text-white/75">{a.path}</div>
-                                <div className="text-[10px] text-white/35">{a.agent} · {a.role} · {a.language ?? a.kind}</div>
+                                <div className="flex items-center gap-2 truncate font-mono text-[11px] text-white/75">
+                                  {isStreaming && (
+                                    <span className="relative flex h-1.5 w-1.5 shrink-0">
+                                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-300 opacity-75" />
+                                      <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-cyan-300" />
+                                    </span>
+                                  )}
+                                  <span className="truncate">{a.path}</span>
+                                </div>
+                                <div className="text-[10px] text-white/35">
+                                  {isStreaming
+                                    ? <span className="text-cyan-300/90">{a.role} is writing… · live</span>
+                                    : <>{a.agent} · {a.role} · {a.language ?? a.kind}</>}
+                                </div>
                               </div>
                               <div className="flex shrink-0 items-center gap-1">
                                 <button
@@ -4452,7 +4528,8 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                                   onClick={() => downloadArtifact(a)}
                                   title="Download file"
                                   aria-label="Download file"
-                                  className="rounded-md border border-white/10 bg-white/[0.04] p-1 text-white/65 hover:border-cyan-300/30 hover:text-cyan-200"
+                                  disabled={isStreaming}
+                                  className="rounded-md border border-white/10 bg-white/[0.04] p-1 text-white/65 hover:border-cyan-300/30 hover:text-cyan-200 disabled:opacity-40"
                                 >
                                   <Download className="h-3.5 w-3.5" />
                                 </button>
@@ -4474,6 +4551,7 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                               path={a.path}
                               content={a.content ?? ""}
                               language={a.language ?? undefined}
+                              streaming={isStreaming}
                             />
                           </div>
                       );

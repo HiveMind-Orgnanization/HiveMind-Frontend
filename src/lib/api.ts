@@ -166,6 +166,13 @@ export type SwarmProgress = {
   currentRole: string | null;
   completedRoles: string[];
   partialResults: Array<{ role: string; agentName: string; replySnippet: string; provider: string; model: string }>;
+  /**
+   * Live in-flight LLM buffer for the role currently being streamed. Updated
+   * on the backend on every OpenAI token; the workspace parses the partial
+   * JSON to extract the current file path + content and renders it live in
+   * the code editor. Absent between roles and for non-codegen roles.
+   */
+  streamingReply?: { role: string; buffer: string };
 };
 
 /** Transient gateway / load errors while polling — one failure should not abort the whole swarm. */
@@ -207,19 +214,29 @@ async function pollSwarmJob(
 ): Promise<{ ok: true; data: SwarmRunResult } | { ok: false; status: number; message: string }> {
   let reportedCount = 0;
   let lastCurrentRole: string | null | undefined = undefined;
-  // First few polls are fast (1.5s) so the resumer sees the latest agent quickly.
+  let lastStreamBufferLen = 0;
+  // Poll cadence:
+  //   - First 8 polls: 1.5s (catches the early "Initializing → Strategy" transition fast)
+  //   - When a streaming buffer is active: 800ms (live-coding effect)
+  //   - Otherwise: 4s (don't hammer EB during long quiet stretches)
   const FAST_INTERVAL_MS = 1500;
+  const STREAM_INTERVAL_MS = 800;
   const SLOW_INTERVAL_MS = 4000;
   const FAST_POLLS = 8;
   let elapsedMs = 0;
   // Swarm with 5-6 repair rounds + multiple agents + gpt-5.5 can run 10-15 min.
   const MAX_MS = 20 * 60_000;
   let pollIdx = 0;
+  let streamingActive = false;
   while (elapsedMs < MAX_MS) {
     if (isCancelled(missionId)) {
       return { ok: false, status: 0, message: "Stopped by user." };
     }
-    const intervalMs = pollIdx < FAST_POLLS ? FAST_INTERVAL_MS : SLOW_INTERVAL_MS;
+    const intervalMs = streamingActive
+      ? STREAM_INTERVAL_MS
+      : pollIdx < FAST_POLLS
+        ? FAST_INTERVAL_MS
+        : SLOW_INTERVAL_MS;
     await new Promise<void>((res) => setTimeout(res, intervalMs));
     elapsedMs += intervalMs;
     pollIdx += 1;
@@ -243,9 +260,13 @@ async function pollSwarmJob(
     if (s.progress && options?.onProgress) {
       const newCount = s.progress.partialResults.length;
       const roleChanged = s.progress.currentRole !== lastCurrentRole;
-      if (newCount > reportedCount || roleChanged) {
+      const streamBufLen = s.progress.streamingReply?.buffer.length ?? 0;
+      streamingActive = streamBufLen > 0;
+      const streamGrew = streamBufLen !== lastStreamBufferLen;
+      if (newCount > reportedCount || roleChanged || streamGrew) {
         reportedCount = newCount;
         lastCurrentRole = s.progress.currentRole;
+        lastStreamBufferLen = streamBufLen;
         options.onProgress(s.progress);
       }
     }

@@ -73,15 +73,25 @@ export function CodePanel({
   content,
   language,
   className,
+  streaming = false,
 }: {
   path: string;
   content: string;
   /** Optional language hint from the artifact metadata. */
   language?: string;
   className?: string;
+  /** True while the LLM is still streaming tokens into `content`. When set,
+   *  a blinking caret is appended to the rendered text so the user sees
+   *  the file is actively being written. */
+  streaming?: boolean;
 }) {
   const lang = useMemo(() => detectLanguage(path, language), [path, language]);
-  const lineCount = useMemo(() => content.split("\n").length, [content]);
+  // When streaming, append an end-of-buffer marker that Prism leaves
+  // un-tokenized. We render it as a CSS-blinking pseudo-cursor below.
+  const displayContent = streaming
+    ? `${content}​` /* zero-width joiner so Prism doesn't trim trailing newlines */
+    : content;
+  const lineCount = useMemo(() => displayContent.split("\n").length, [displayContent]);
 
   return (
     <div className={`relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${className ?? ""}`}>
@@ -98,7 +108,6 @@ export function CodePanel({
           fontSize: "12.5px",
           lineHeight: "1.65",
           minHeight: "100%",
-          // Container clips overflow; let SyntaxHighlighter occupy the full panel.
           height: "100%",
           width: "100%",
           overflow: "auto",
@@ -117,8 +126,19 @@ export function CodePanel({
           },
         }}
       >
-        {content || "// empty file"}
+        {displayContent || "// empty file"}
       </SyntaxHighlighter>
+
+      {/* Blinking write caret while the LLM is mid-stream. Anchored bottom-left
+          so it sits next to the live cursor at end-of-buffer — close enough to
+          feel like a typewriter without trying to compute the exact glyph
+          position (Prism wraps tokens in many spans, making that brittle). */}
+      {streaming && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute left-12 bottom-3 inline-block h-3.5 w-[2px] animate-pulse bg-cyan-300/85 shadow-[0_0_8px_rgba(34,211,238,0.7)]"
+        />
+      )}
 
       {/* tiny chip top-right, matches VS Code's status bar idiom */}
       <div className="pointer-events-none absolute right-3 top-2.5 flex items-center gap-2 text-[10px] uppercase tracking-[0.25em] text-white/40">
