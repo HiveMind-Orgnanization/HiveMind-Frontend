@@ -25,6 +25,7 @@ import { Sidebar } from "./components/dashboard/sidebar";
 import { TopNav } from "./components/dashboard/topnav";
 import { PageHeader } from "./components/dashboard/page-header";
 import { Particles } from "./components/particles";
+import { CodePanel } from "./components/CodePanel";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { PublicKey, SystemProgram, Transaction, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import {
@@ -80,6 +81,7 @@ import { useAgents, useTasks, useHiveMindRealtime, useMemoryChunks } from "./hoo
 import { publishLocalActivity } from "../lib/agent-activity-bus";
 import { AgentMessageMarkdown } from "./components/agent-message-markdown";
 import { buildArtifactTree, dedupeArtifactsByPath, type ArtifactTreeNode } from "../lib/artifact-tree";
+import { parseStreamingArtifact, parseStreamingDialogue } from "../lib/streaming-artifact-parser";
 import { SandpackProvider, SandpackPreview as SandpackFrame, useSandpack } from "@codesandbox/sandpack-react";
 
 // All agent invocations default to gpt-5.5 (the backend routes Development/Coordination
@@ -1040,8 +1042,12 @@ function HiveMindSwarmBubble({ m, onRegenerate }: { m: ChatMsg; onRegenerate?: (
           key={activeThought.agent}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          className="text-[12.5px] text-white/35"
+          className="flex items-center gap-2 text-[13px] font-medium text-cyan-200/90"
         >
+          <span className="relative flex h-1.5 w-1.5">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-300 opacity-75" />
+            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-cyan-300" />
+          </span>
           {activeThought.agent} is working…
         </motion.p>
       )}
@@ -2011,6 +2017,20 @@ function AgentWorkspaceMissionBody({
   const [artifacts, setArtifacts] = useState<MissionArtifact[]>([]);
   const [artifactsLoading, setArtifactsLoading] = useState(true);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
+  /**
+   * Live LLM streaming buffer parsed into "file being written right now".
+   * Populated from SwarmProgress.streamingReply via the onProgress callback;
+   * the code panel prefers this over the selected DB artifact when present so
+   * the user watches the file appear character-by-character. Cleared when the
+   * current role finishes or the swarm ends.
+   */
+  const [streamingArtifact, setStreamingArtifact] = useState<{ path: string; content: string; role: string; completed: boolean } | null>(null);
+  // When an agent starts streaming code into the editor, flip the right panel
+  // to "code" view so the user actually sees the live-coding effect. Without
+  // this, anyone who left the panel on "preview" would miss the whole show.
+  useEffect(() => {
+    if (streamingArtifact) setWorkspacePanelTab("code");
+  }, [streamingArtifact?.role, streamingArtifact?.path]);
   const [collapsedArtifactFolders, setCollapsedArtifactFolders] = useState<Set<string>>(new Set());
 
   const [zipDownloading, setZipDownloading] = useState(false);
@@ -2339,6 +2359,51 @@ function AgentWorkspaceMissionBody({
             if (cancelled) return;
             const progressTs = new Date().toLocaleTimeString("en-US", { hour12: false });
             const lastResult = progress.partialResults[progress.partialResults.length - 1];
+            // Mirror live-coding + live-dialogue state on the resume path too
+            // so navigating back into a mid-stream role still shows both the
+            // file being written and the conversational message streaming.
+            if (progress.streamingReply) {
+              const streamRole = progress.streamingReply.role;
+              const parsed = parseStreamingArtifact(progress.streamingReply.buffer);
+              // Only surface the streaming artifact once `content` has actually
+              // started flowing — otherwise the editor shows the file header
+              // with an empty body, which reads as broken ("live indicator but
+              // nothing typing"). Falsey / very-short content means the LLM
+              // is still between `"path"` and the opening `"content":"` quote.
+              if (parsed && parsed.content && parsed.content.length > 2) {
+                setStreamingArtifact({
+                  path: parsed.path,
+                  content: parsed.content,
+                  role: streamRole,
+                  completed: parsed.completed,
+                });
+              }
+              const dialogue = parseStreamingDialogue(progress.streamingReply.buffer);
+              // HiveMind brief-generation phase: plain JSON with no dialogue
+              // field, so parseStreamingDialogue returns null. Show the raw
+              // buffer (de-noised) so the user sees movement during bootstrap.
+              const fallbackText = streamRole === "HiveMind"
+                ? progress.streamingReply.buffer.replace(/^[\s{}"]+/, "").slice(0, 280)
+                : null;
+              // Cap dialogue at 600 chars — the prompt says 3-5 sentences (≈
+              // 60-100 words). Anything longer means the LLM is dumping its
+              // OUTPUT into the dialogue section (Research listing the whole
+              // competitive landscape, Marketing pasting all the copy, etc).
+              // Truncate so the bubble reads as chat, not a deliverable dump.
+              const cappedDialogue = dialogue?.text ? dialogue.text.slice(0, 600) : null;
+              const liveText = cappedDialogue || fallbackText;
+              if (liveText) {
+                setMessages((prev) => prev.map((msg) => {
+                  if (msg.id !== hmId) return msg;
+                  const thoughts = (msg.thoughts ?? []).map((t) =>
+                    t.agent === streamRole && !t.done ? { ...t, text: liveText } : t,
+                  );
+                  return { ...msg, thoughts };
+                }));
+              }
+            } else {
+              setStreamingArtifact(null);
+            }
             setMessages((prev) => prev.map((msg) => {
               if (msg.id !== hmId) return msg;
               // Retire the bootstrap placeholder once real progress lands.
@@ -2347,19 +2412,24 @@ function AgentWorkspaceMissionBody({
                   ? { ...t, text: "Mission brief ready · routing to specialist agents.", done: true }
                   : t,
               );
-              thoughts = thoughts.map((t) =>
-                !t.done && lastResult && t.agent === lastResult.role
-                  ? {
-                      ...t,
-                      text: summarizeAgentHandoff({
-                        role: lastResult.role,
-                        reply: lastResult.replySnippet,
-                        nextRole: progress.currentRole,
-                      }),
-                      done: true,
-                    }
-                  : t,
-              );
+              thoughts = thoughts.map((t) => {
+                if (!t.done && lastResult && t.agent === lastResult.role) {
+                  const looksLikePlaceholder = /agent is analysing/.test(t.text ?? "");
+                  const hasRealDialogue = !!t.text && t.text.length > 60 && !looksLikePlaceholder;
+                  return {
+                    ...t,
+                    text: hasRealDialogue
+                      ? t.text
+                      : summarizeAgentHandoff({
+                          role: lastResult.role,
+                          reply: lastResult.replySnippet,
+                          nextRole: progress.currentRole,
+                        }),
+                    done: true,
+                  };
+                }
+                return t;
+              });
               if (progress.currentRole && !thoughts.some((t) => t.agent === progress.currentRole)) {
                 thoughts = [
                   ...thoughts,
@@ -2378,6 +2448,7 @@ function AgentWorkspaceMissionBody({
         });
         if (cancelled) return;
         setAutoInvoking(false);
+        setStreamingArtifact(null);
         markJobFinished(mission.id);
         if (!swarm.ok) {
           setMessages((prev) => prev.map((m) =>
@@ -3217,6 +3288,54 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
             const progressTs = new Date().toLocaleTimeString("en-US", { hour12: false });
             const lastResult = progress.partialResults[progress.partialResults.length - 1];
 
+            // Live-coding + live-dialogue effect: parse the LLM's in-flight
+            // buffer into (a) the file path + partial content the model is
+            // currently writing — surfaces in the code panel — and (b) the
+            // conversational dialogue text — streams into the active chat
+            // bubble. Cleared when streamingReply is absent.
+            if (progress.streamingReply) {
+              const streamRole = progress.streamingReply.role;
+              const parsed = parseStreamingArtifact(progress.streamingReply.buffer);
+              // Only surface the streaming artifact once `content` has actually
+              // started flowing — otherwise the editor shows the file header
+              // with an empty body, which reads as broken ("live indicator but
+              // nothing typing"). Falsey / very-short content means the LLM
+              // is still between `"path"` and the opening `"content":"` quote.
+              if (parsed && parsed.content && parsed.content.length > 2) {
+                setStreamingArtifact({
+                  path: parsed.path,
+                  content: parsed.content,
+                  role: streamRole,
+                  completed: parsed.completed,
+                });
+              }
+              const dialogue = parseStreamingDialogue(progress.streamingReply.buffer);
+              // HiveMind brief-generation phase: plain JSON with no dialogue
+              // field, so parseStreamingDialogue returns null. Show the raw
+              // buffer (de-noised) so the user sees movement during bootstrap.
+              const fallbackText = streamRole === "HiveMind"
+                ? progress.streamingReply.buffer.replace(/^[\s{}"]+/, "").slice(0, 280)
+                : null;
+              // Cap dialogue at 600 chars — the prompt says 3-5 sentences (≈
+              // 60-100 words). Anything longer means the LLM is dumping its
+              // OUTPUT into the dialogue section (Research listing the whole
+              // competitive landscape, Marketing pasting all the copy, etc).
+              // Truncate so the bubble reads as chat, not a deliverable dump.
+              const cappedDialogue = dialogue?.text ? dialogue.text.slice(0, 600) : null;
+              const liveText = cappedDialogue || fallbackText;
+              if (liveText) {
+                setMessages((prev) => prev.map((msg) => {
+                  if (msg.id !== hmId) return msg;
+                  const thoughts = (msg.thoughts ?? []).map((t) =>
+                    t.agent === streamRole && !t.done ? { ...t, text: liveText } : t,
+                  );
+                  return { ...msg, thoughts };
+                }));
+              }
+            } else {
+              setStreamingArtifact(null);
+            }
+
             // Mirror swarm progress to the local bus so Live Console streams
             // even when the WS hop is broken (Vercel→EB has no WS proxy).
             if (lastResult) {
@@ -3244,19 +3363,29 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                   ? { ...t, text: "Mission brief ready · routing to specialist agents.", done: true }
                   : t,
               );
-              thoughts = thoughts.map((t) =>
-                !t.done && lastResult && t.agent === lastResult.role
-                  ? {
-                      ...t,
-                      text: summarizeAgentHandoff({
-                        role: lastResult.role,
-                        reply: lastResult.replySnippet,
-                        nextRole: progress.currentRole,
-                      }),
-                      done: true,
-                    }
-                  : t,
-              );
+              thoughts = thoughts.map((t) => {
+                if (!t.done && lastResult && t.agent === lastResult.role) {
+                  // Preserve a real streamed dialogue if we already have one
+                  // (length > placeholder-and-then-some, doesn't match the
+                  // "X agent is analysing…" placeholder). Falls back to the
+                  // handoff summary only when the LLM didn't follow the
+                  // dialogue format (or streaming failed).
+                  const looksLikePlaceholder = /agent is analysing/.test(t.text ?? "");
+                  const hasRealDialogue = !!t.text && t.text.length > 60 && !looksLikePlaceholder;
+                  return {
+                    ...t,
+                    text: hasRealDialogue
+                      ? t.text
+                      : summarizeAgentHandoff({
+                          role: lastResult.role,
+                          reply: lastResult.replySnippet,
+                          nextRole: progress.currentRole,
+                        }),
+                    done: true,
+                  };
+                }
+                return t;
+              });
               // Add new working entry for the current role if not already tracked
               if (progress.currentRole && !thoughts.some((t) => t.agent === progress.currentRole)) {
                 thoughts = [
@@ -3286,6 +3415,7 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
       );
 
       setAutoInvoking(false);
+      setStreamingArtifact(null);
       // Swarm finished one way or the other — clear the tracked job record so
       // remounts don't try to resume polling a job that has already terminated.
       markSwarmFinished(mission.id);
@@ -4370,14 +4500,7 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                               <span className="text-amber-200/85">
                                 Sign in with the same wallet that runs the swarm — code is loaded from the API after auth.
                               </span>
-                            ) : (
-                              <>
-                                <span className="font-medium text-white/55">Tip</span>
-                                <span className="text-white/40"> · </span>
-                                If the log shows files verified but this stays empty, refresh the page or confirm you did not switch
-                                wallets (artifacts are stored per wallet).
-                              </>
-                            )
+                            ) : null
                           }
                         />
                       ) : (
@@ -4393,8 +4516,26 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                     </div>
                     {/* Code viewer panel */}
                     {(() => {
-                      const a = artifacts.find((x) => x.id === selectedArtifactId) ?? artifacts[0];
-                      if (artifactsLoading) {
+                      // Live-coding mode: when the swarm is streaming a file
+                      // RIGHT NOW, hijack the panel to show the in-flight buffer
+                      // instead of the previously-selected DB artifact. The DB
+                      // version will replace it as soon as pushProgress lands.
+                      const streamingA: MissionArtifact | null = streamingArtifact
+                        ? {
+                            id: `streaming:${streamingArtifact.role}:${streamingArtifact.path}`,
+                            missionId: mission.id,
+                            wallet: workspaceWalletPk ?? "",
+                            agent: streamingArtifact.role,
+                            role: streamingArtifact.role,
+                            kind: "file",
+                            path: streamingArtifact.path,
+                            language: streamingArtifact.path.split(".").pop(),
+                            content: streamingArtifact.content,
+                            createdAt: Date.now(),
+                          }
+                        : null;
+                      const a = streamingA ?? artifacts.find((x) => x.id === selectedArtifactId) ?? artifacts[0];
+                      if (artifactsLoading && !streamingA) {
                         return (
                           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-white/[0.06] bg-gradient-to-b from-black/45 to-black/30">
                             {/* Skeleton header */}
@@ -4438,12 +4579,25 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                           </div>
                         );
                       }
+                      const isStreaming = Boolean(streamingA);
                       return (
-                          <div className="flex h-full max-h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-black/55">
+                          <div className={`flex h-full max-h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border bg-black/55 ${isStreaming ? "border-cyan-300/40 shadow-[0_0_0_1px_rgba(34,211,238,0.18),0_0_45px_-12px_rgba(34,211,238,0.4)]" : "border-white/[0.08]"}`}>
                             <div className="flex items-center justify-between gap-2 border-b border-white/5 px-3 py-2">
                               <div className="min-w-0">
-                                <div className="truncate font-mono text-[11px] text-white/75">{a.path}</div>
-                                <div className="text-[10px] text-white/35">{a.agent} · {a.role} · {a.language ?? a.kind}</div>
+                                <div className="flex items-center gap-2 truncate font-mono text-[11px] text-white/75">
+                                  {isStreaming && (
+                                    <span className="relative flex h-1.5 w-1.5 shrink-0">
+                                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-300 opacity-75" />
+                                      <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-cyan-300" />
+                                    </span>
+                                  )}
+                                  <span className="truncate">{a.path}</span>
+                                </div>
+                                <div className="text-[10px] text-white/35">
+                                  {isStreaming
+                                    ? <span className="text-cyan-300/90">{a.role} is writing… · live</span>
+                                    : <>{a.agent} · {a.role} · {a.language ?? a.kind}</>}
+                                </div>
                               </div>
                               <div className="flex shrink-0 items-center gap-1">
                                 <button
@@ -4451,7 +4605,8 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                                   onClick={() => downloadArtifact(a)}
                                   title="Download file"
                                   aria-label="Download file"
-                                  className="rounded-md border border-white/10 bg-white/[0.04] p-1 text-white/65 hover:border-cyan-300/30 hover:text-cyan-200"
+                                  disabled={isStreaming}
+                                  className="rounded-md border border-white/10 bg-white/[0.04] p-1 text-white/65 hover:border-cyan-300/30 hover:text-cyan-200 disabled:opacity-40"
                                 >
                                   <Download className="h-3.5 w-3.5" />
                                 </button>
@@ -4469,12 +4624,12 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                                 </button>
                               </div>
                             </div>
-                            <pre
-                              className="min-h-0 min-w-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[12px] leading-relaxed text-white/85"
-                              style={{ wordBreak: "break-word", overflowWrap: "anywhere" }}
-                            >
-                              <code className="block">{a.content}</code>
-                            </pre>
+                            <CodePanel
+                              path={a.path}
+                              content={a.content ?? ""}
+                              language={a.language ?? undefined}
+                              streaming={isStreaming}
+                            />
                           </div>
                       );
                     })()}
