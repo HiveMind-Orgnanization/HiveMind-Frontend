@@ -2374,11 +2374,19 @@ function AgentWorkspaceMissionBody({
                 });
               }
               const dialogue = parseStreamingDialogue(progress.streamingReply.buffer);
-              if (dialogue && dialogue.text) {
+              // HiveMind brief-generation phase: the LLM emits plain JSON with
+              // no dialogue field so parseStreamingDialogue returns null. Show
+              // the raw buffer (de-noised) so the user sees movement during
+              // bootstrap instead of a static "generating brief…" line.
+              const fallbackText = streamRole === "HiveMind"
+                ? progress.streamingReply.buffer.replace(/^[\s{}"]+/, "").slice(0, 280)
+                : null;
+              const liveText = dialogue?.text || fallbackText;
+              if (liveText) {
                 setMessages((prev) => prev.map((msg) => {
                   if (msg.id !== hmId) return msg;
                   const thoughts = (msg.thoughts ?? []).map((t) =>
-                    t.agent === streamRole && !t.done ? { ...t, text: dialogue.text } : t,
+                    t.agent === streamRole && !t.done ? { ...t, text: liveText } : t,
                   );
                   return { ...msg, thoughts };
                 }));
@@ -3287,11 +3295,19 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                 });
               }
               const dialogue = parseStreamingDialogue(progress.streamingReply.buffer);
-              if (dialogue && dialogue.text) {
+              // HiveMind brief-generation phase: the LLM emits plain JSON with
+              // no dialogue field so parseStreamingDialogue returns null. Show
+              // the raw buffer (de-noised) so the user sees movement during
+              // bootstrap instead of a static "generating brief…" line.
+              const fallbackText = streamRole === "HiveMind"
+                ? progress.streamingReply.buffer.replace(/^[\s{}"]+/, "").slice(0, 280)
+                : null;
+              const liveText = dialogue?.text || fallbackText;
+              if (liveText) {
                 setMessages((prev) => prev.map((msg) => {
                   if (msg.id !== hmId) return msg;
                   const thoughts = (msg.thoughts ?? []).map((t) =>
-                    t.agent === streamRole && !t.done ? { ...t, text: dialogue.text } : t,
+                    t.agent === streamRole && !t.done ? { ...t, text: liveText } : t,
                   );
                   return { ...msg, thoughts };
                 }));
