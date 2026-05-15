@@ -22,6 +22,7 @@ import Notifications from "./Notifications";
 import TrialPage from "./TrialPage";
 import { StubPage } from "./components/dashboard/stub-page";
 import { useAutoRegisterTrial } from "./hooks/useAutoRegisterTrial";
+import { BuildBadge } from "./components/BuildBadge";
 
 function WalletEffects() {
   useAutoRegisterTrial();
@@ -77,6 +78,7 @@ export default function App() {
           </NotificationsProvider>
         </CommandPaletteProvider>
       </BrowserRouter>
+      <BuildBadge />
     </WalletProviders>
   );
 }

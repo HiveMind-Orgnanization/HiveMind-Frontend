@@ -1,9 +1,34 @@
 import { defineConfig, loadEnv } from 'vite'
 import path from 'path'
 import fs from 'fs'
+import { execSync } from 'child_process'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { nodePolyfills } from 'vite-plugin-node-polyfills'
+
+/**
+ * Resolve the git commit SHA + branch the build was made from. Used to stamp
+ * the bundle so the deployed page can show "loaded build a1b2c3d (dev)" — the
+ * fastest way to tell if a user is hitting a stale Vercel preview that hasn't
+ * picked up the latest push.
+ *
+ * Vercel sets VERCEL_GIT_COMMIT_SHA / VERCEL_GIT_COMMIT_REF when building, so
+ * we read those first; falls back to local git CLI for local dev builds.
+ */
+function getBuildMeta(): { sha: string; branch: string; time: string } {
+  const env = process.env
+  let sha = env.VERCEL_GIT_COMMIT_SHA ?? ''
+  let branch = env.VERCEL_GIT_COMMIT_REF ?? ''
+  if (!sha) {
+    try { sha = execSync('git rev-parse --short=8 HEAD').toString().trim() } catch { sha = 'unknown' }
+  } else {
+    sha = sha.slice(0, 8)
+  }
+  if (!branch) {
+    try { branch = execSync('git rev-parse --abbrev-ref HEAD').toString().trim() } catch { branch = 'unknown' }
+  }
+  return { sha, branch, time: new Date().toISOString() }
+}
 
 // Serve Docusaurus static build at /docs/* without SPA fallback intercepting
 function docsStaticPlugin() {
@@ -61,8 +86,14 @@ function figmaAssetResolver() {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const backendTarget = env.BACKEND_PROXY_TARGET || 'http://127.0.0.1:8787'
+  const buildMeta = getBuildMeta()
 
   return {
+    define: {
+      __HM_BUILD_SHA__: JSON.stringify(buildMeta.sha),
+      __HM_BUILD_BRANCH__: JSON.stringify(buildMeta.branch),
+      __HM_BUILD_TIME__: JSON.stringify(buildMeta.time),
+    },
     plugins: [
       nodePolyfills({ globals: { Buffer: true, global: true, process: true } }),
       docsStaticPlugin(),
