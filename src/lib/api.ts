@@ -220,7 +220,7 @@ async function pollSwarmJob(
   //   - When a streaming buffer is active: 800ms (live-coding effect)
   //   - Otherwise: 4s (don't hammer EB during long quiet stretches)
   const FAST_INTERVAL_MS = 1500;
-  const STREAM_INTERVAL_MS = 800;
+  const STREAM_INTERVAL_MS = 500;
   const SLOW_INTERVAL_MS = 4000;
   const FAST_POLLS = 8;
   let elapsedMs = 0;

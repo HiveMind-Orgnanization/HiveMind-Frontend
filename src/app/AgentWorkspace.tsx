@@ -1042,8 +1042,12 @@ function HiveMindSwarmBubble({ m, onRegenerate }: { m: ChatMsg; onRegenerate?: (
           key={activeThought.agent}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          className="text-[12.5px] text-white/35"
+          className="flex items-center gap-2 text-[13px] font-medium text-cyan-200/90"
         >
+          <span className="relative flex h-1.5 w-1.5">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-300 opacity-75" />
+            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-cyan-300" />
+          </span>
           {activeThought.agent} is working…
         </motion.p>
       )}
@@ -2021,6 +2025,12 @@ function AgentWorkspaceMissionBody({
    * current role finishes or the swarm ends.
    */
   const [streamingArtifact, setStreamingArtifact] = useState<{ path: string; content: string; role: string; completed: boolean } | null>(null);
+  // When an agent starts streaming code into the editor, flip the right panel
+  // to "code" view so the user actually sees the live-coding effect. Without
+  // this, anyone who left the panel on "preview" would miss the whole show.
+  useEffect(() => {
+    if (streamingArtifact) setWorkspacePanelTab("code");
+  }, [streamingArtifact?.role, streamingArtifact?.path]);
   const [collapsedArtifactFolders, setCollapsedArtifactFolders] = useState<Set<string>>(new Set());
 
   const [zipDownloading, setZipDownloading] = useState(false);
@@ -4416,14 +4426,7 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                               <span className="text-amber-200/85">
                                 Sign in with the same wallet that runs the swarm — code is loaded from the API after auth.
                               </span>
-                            ) : (
-                              <>
-                                <span className="font-medium text-white/55">Tip</span>
-                                <span className="text-white/40"> · </span>
-                                If the log shows files verified but this stays empty, refresh the page or confirm you did not switch
-                                wallets (artifacts are stored per wallet).
-                              </>
-                            )
+                            ) : null
                           }
                         />
                       ) : (
