@@ -195,18 +195,28 @@ export function parseStreamingDialogue(buffer: string): StreamingDialogue | null
     return { text: decoded.content, completed: decoded.closed };
   }
 
-  // Markdown form. Look for `## Dialogue` header (case-insensitive, allow
-  // surrounding whitespace), grab everything until the next `\n##` header or
-  // end of buffer.
+  // Markdown form. Preferred path: explicit `## Dialogue` header.
   const headerMatch = buffer.match(/##\s*Dialogue\s*\n/i);
-  if (!headerMatch || headerMatch.index === undefined) return null;
-  const after = buffer.slice(headerMatch.index + headerMatch[0].length);
-  // The closing boundary is the next `\n##` header — most commonly `## Output`.
-  // If we haven't reached the next header yet, return whatever has streamed
-  // so far and mark not-complete.
-  const nextHeader = after.search(/\n##\s+/);
-  if (nextHeader < 0) {
-    return { text: after.trimEnd(), completed: false };
+  if (headerMatch && headerMatch.index !== undefined) {
+    const after = buffer.slice(headerMatch.index + headerMatch[0].length);
+    // Closing boundary is the next `\n##` header — usually `## Output`.
+    const nextHeader = after.search(/\n##\s+/);
+    if (nextHeader < 0) return { text: after.trimEnd(), completed: false };
+    return { text: after.slice(0, nextHeader).trim(), completed: true };
   }
-  return { text: after.slice(0, nextHeader).trim(), completed: true };
+
+  // LENIENT FALLBACK: the LLM occasionally ignores the `## Dialogue` /
+  // `## Output` format and just writes the dialogue text inline (especially
+  // with reasoning models that compress instructions). Treat the buffer up
+  // to the FIRST `## ` header as the dialogue — that's where the LLM
+  // typically transitions to the deliverable. If no header has streamed in
+  // yet, just show the whole buffer (capped) so the user sees movement.
+  const firstHeader = buffer.search(/\n#{1,4}\s+\S/);
+  if (firstHeader > 8) {
+    return { text: buffer.slice(0, firstHeader).trim(), completed: true };
+  }
+  // Still no header — surface the whole buffer (trimmed) as live dialogue.
+  // The bootstrap "HiveMind" pseudo-role has its own raw-buffer fallback in
+  // AgentWorkspace; this branch covers Strategy/Research/Marketing/etc.
+  return { text: buffer.trim().slice(0, 600), completed: false };
 }
