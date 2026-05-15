@@ -970,7 +970,7 @@ export default function Dashboard() {
               {/* feed */}
               <div className="border-b border-white/5 p-4">
                 <div className="text-[10px] uppercase tracking-[0.3em] text-white/40">Agent Activity</div>
-                <div className="mt-3 max-h-[288px] space-y-2 overflow-y-auto pr-1">
+                <div className="mt-3 max-h-[220px] space-y-2 overflow-y-auto pr-1">
                   {liveFeed.length > 0 ? (
                     liveFeed.map((e, i) => (
                       <motion.div
@@ -1007,7 +1007,7 @@ export default function Dashboard() {
                   <span>// agent.console</span>
                   <span className="text-cyan-300">streaming</span>
                 </div>
-                <div className="mt-3 h-[288px] min-h-[288px] overflow-y-auto rounded-lg border border-white/5 bg-black/60 p-3 font-mono text-[11px] leading-relaxed">
+                <div className="mt-3 h-[220px] min-h-[220px] overflow-y-auto rounded-lg border border-white/5 bg-black/60 p-3 font-mono text-[11px] leading-relaxed">
                   {consoleLines.length > 0 ? (
                     consoleLines.map((l, i) => (
                       <motion.div
