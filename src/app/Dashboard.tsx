@@ -1007,7 +1007,7 @@ export default function Dashboard() {
                   <span>// agent.console</span>
                   <span className="text-cyan-300">streaming</span>
                 </div>
-                <div className="mt-3 h-64 overflow-y-auto rounded-lg border border-white/5 bg-black/60 p-3 font-mono text-[11px] leading-relaxed">
+                <div className="mt-3 h-72 overflow-y-auto rounded-lg border border-white/5 bg-black/60 p-3 font-mono text-[11px] leading-relaxed">
                   {consoleLines.length > 0 ? (
                     consoleLines.map((l, i) => (
                       <motion.div
