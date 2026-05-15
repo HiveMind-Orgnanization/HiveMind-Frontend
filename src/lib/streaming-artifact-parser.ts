@@ -43,6 +43,13 @@ export type StreamingArtifact = {
   completed: boolean;
 };
 
+export type StreamingDialogue = {
+  /** Partial conversational message text decoded so far. */
+  text: string;
+  /** True if the dialogue section is finished (closing quote / `## Output` seen). */
+  completed: boolean;
+};
+
 /** Decode a JSON-escaped string body. Stops at the first unescaped `"`. Returns
  *  the decoded content and whether the closing quote was found. Input starts
  *  just AFTER the opening `"`. */
@@ -150,4 +157,56 @@ export function parseStreamingArtifact(buffer: string): StreamingArtifact | null
     cursor = contentDecoded.endIndex + 1;
   }
   return latest;
+}
+
+/**
+ * Extract the conversational dialogue text from a streaming buffer.
+ *
+ * Handles BOTH formats the backend now emits:
+ *
+ *   JSON envelope (Design / Development / Coordination):
+ *     {"dialogue":"Hey team — that color spec is sharp...","summary":"...","artifacts":[…]}
+ *
+ *   Markdown reply (Strategy / Research / Marketing / Treasury / Analytics):
+ *     ## Dialogue
+ *     Hey team — thanks Design...
+ *
+ *     ## Output
+ *     <the actual deliverable>
+ *
+ * Returns the decoded dialogue text + whether it's done streaming (the
+ * closing quote / next `## ` header / end of dialogue field has been seen).
+ * Returns null if the buffer hasn't reached the dialogue section yet — the
+ * caller should keep showing the previous state.
+ */
+export function parseStreamingDialogue(buffer: string): StreamingDialogue | null {
+  if (!buffer) return null;
+
+  // Probe the first non-whitespace character to choose the parsing strategy.
+  // JSON buffers start with `{` or `[`; markdown buffers start with `#` or
+  // any other character.
+  const trimmedStart = buffer.replace(/^\s+/, "");
+  const isJson = trimmedStart.startsWith("{") || trimmedStart.startsWith("[");
+
+  if (isJson) {
+    const dialogueValueStart = findFieldValueStart(buffer, "dialogue", 0);
+    if (dialogueValueStart < 0) return null;
+    const decoded = decodeJsonString(buffer, dialogueValueStart);
+    return { text: decoded.content, completed: decoded.closed };
+  }
+
+  // Markdown form. Look for `## Dialogue` header (case-insensitive, allow
+  // surrounding whitespace), grab everything until the next `\n##` header or
+  // end of buffer.
+  const headerMatch = buffer.match(/##\s*Dialogue\s*\n/i);
+  if (!headerMatch || headerMatch.index === undefined) return null;
+  const after = buffer.slice(headerMatch.index + headerMatch[0].length);
+  // The closing boundary is the next `\n##` header — most commonly `## Output`.
+  // If we haven't reached the next header yet, return whatever has streamed
+  // so far and mark not-complete.
+  const nextHeader = after.search(/\n##\s+/);
+  if (nextHeader < 0) {
+    return { text: after.trimEnd(), completed: false };
+  }
+  return { text: after.slice(0, nextHeader).trim(), completed: true };
 }

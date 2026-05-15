@@ -81,7 +81,7 @@ import { useAgents, useTasks, useHiveMindRealtime, useMemoryChunks } from "./hoo
 import { publishLocalActivity } from "../lib/agent-activity-bus";
 import { AgentMessageMarkdown } from "./components/agent-message-markdown";
 import { buildArtifactTree, dedupeArtifactsByPath, type ArtifactTreeNode } from "../lib/artifact-tree";
-import { parseStreamingArtifact } from "../lib/streaming-artifact-parser";
+import { parseStreamingArtifact, parseStreamingDialogue } from "../lib/streaming-artifact-parser";
 import { SandpackProvider, SandpackPreview as SandpackFrame, useSandpack } from "@codesandbox/sandpack-react";
 
 // All agent invocations default to gpt-5.5 (the backend routes Development/Coordination
@@ -2359,18 +2359,29 @@ function AgentWorkspaceMissionBody({
             if (cancelled) return;
             const progressTs = new Date().toLocaleTimeString("en-US", { hour12: false });
             const lastResult = progress.partialResults[progress.partialResults.length - 1];
-            // Mirror live-coding state on the resume path too — if the user
-            // navigated back into a mid-stream Development role, they should
-            // still see the file being written in real time.
+            // Mirror live-coding + live-dialogue state on the resume path too
+            // so navigating back into a mid-stream role still shows both the
+            // file being written and the conversational message streaming.
             if (progress.streamingReply) {
+              const streamRole = progress.streamingReply.role;
               const parsed = parseStreamingArtifact(progress.streamingReply.buffer);
               if (parsed) {
                 setStreamingArtifact({
                   path: parsed.path,
                   content: parsed.content,
-                  role: progress.streamingReply.role,
+                  role: streamRole,
                   completed: parsed.completed,
                 });
+              }
+              const dialogue = parseStreamingDialogue(progress.streamingReply.buffer);
+              if (dialogue && dialogue.text) {
+                setMessages((prev) => prev.map((msg) => {
+                  if (msg.id !== hmId) return msg;
+                  const thoughts = (msg.thoughts ?? []).map((t) =>
+                    t.agent === streamRole && !t.done ? { ...t, text: dialogue.text } : t,
+                  );
+                  return { ...msg, thoughts };
+                }));
               }
             } else {
               setStreamingArtifact(null);
@@ -2383,19 +2394,24 @@ function AgentWorkspaceMissionBody({
                   ? { ...t, text: "Mission brief ready · routing to specialist agents.", done: true }
                   : t,
               );
-              thoughts = thoughts.map((t) =>
-                !t.done && lastResult && t.agent === lastResult.role
-                  ? {
-                      ...t,
-                      text: summarizeAgentHandoff({
-                        role: lastResult.role,
-                        reply: lastResult.replySnippet,
-                        nextRole: progress.currentRole,
-                      }),
-                      done: true,
-                    }
-                  : t,
-              );
+              thoughts = thoughts.map((t) => {
+                if (!t.done && lastResult && t.agent === lastResult.role) {
+                  const looksLikePlaceholder = /agent is analysing/.test(t.text ?? "");
+                  const hasRealDialogue = !!t.text && t.text.length > 60 && !looksLikePlaceholder;
+                  return {
+                    ...t,
+                    text: hasRealDialogue
+                      ? t.text
+                      : summarizeAgentHandoff({
+                          role: lastResult.role,
+                          reply: lastResult.replySnippet,
+                          nextRole: progress.currentRole,
+                        }),
+                    done: true,
+                  };
+                }
+                return t;
+              });
               if (progress.currentRole && !thoughts.some((t) => t.agent === progress.currentRole)) {
                 thoughts = [
                   ...thoughts,
@@ -3254,19 +3270,31 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
             const progressTs = new Date().toLocaleTimeString("en-US", { hour12: false });
             const lastResult = progress.partialResults[progress.partialResults.length - 1];
 
-            // Live-coding effect: parse the LLM's in-flight buffer into the
-            // file path + partial content the model is currently writing,
-            // and surface it in the code panel. Cleared when streamingReply
-            // is absent (between roles / after the last role completes).
+            // Live-coding + live-dialogue effect: parse the LLM's in-flight
+            // buffer into (a) the file path + partial content the model is
+            // currently writing — surfaces in the code panel — and (b) the
+            // conversational dialogue text — streams into the active chat
+            // bubble. Cleared when streamingReply is absent.
             if (progress.streamingReply) {
+              const streamRole = progress.streamingReply.role;
               const parsed = parseStreamingArtifact(progress.streamingReply.buffer);
               if (parsed) {
                 setStreamingArtifact({
                   path: parsed.path,
                   content: parsed.content,
-                  role: progress.streamingReply.role,
+                  role: streamRole,
                   completed: parsed.completed,
                 });
+              }
+              const dialogue = parseStreamingDialogue(progress.streamingReply.buffer);
+              if (dialogue && dialogue.text) {
+                setMessages((prev) => prev.map((msg) => {
+                  if (msg.id !== hmId) return msg;
+                  const thoughts = (msg.thoughts ?? []).map((t) =>
+                    t.agent === streamRole && !t.done ? { ...t, text: dialogue.text } : t,
+                  );
+                  return { ...msg, thoughts };
+                }));
               }
             } else {
               setStreamingArtifact(null);
@@ -3299,19 +3327,29 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                   ? { ...t, text: "Mission brief ready · routing to specialist agents.", done: true }
                   : t,
               );
-              thoughts = thoughts.map((t) =>
-                !t.done && lastResult && t.agent === lastResult.role
-                  ? {
-                      ...t,
-                      text: summarizeAgentHandoff({
-                        role: lastResult.role,
-                        reply: lastResult.replySnippet,
-                        nextRole: progress.currentRole,
-                      }),
-                      done: true,
-                    }
-                  : t,
-              );
+              thoughts = thoughts.map((t) => {
+                if (!t.done && lastResult && t.agent === lastResult.role) {
+                  // Preserve a real streamed dialogue if we already have one
+                  // (length > placeholder-and-then-some, doesn't match the
+                  // "X agent is analysing…" placeholder). Falls back to the
+                  // handoff summary only when the LLM didn't follow the
+                  // dialogue format (or streaming failed).
+                  const looksLikePlaceholder = /agent is analysing/.test(t.text ?? "");
+                  const hasRealDialogue = !!t.text && t.text.length > 60 && !looksLikePlaceholder;
+                  return {
+                    ...t,
+                    text: hasRealDialogue
+                      ? t.text
+                      : summarizeAgentHandoff({
+                          role: lastResult.role,
+                          reply: lastResult.replySnippet,
+                          nextRole: progress.currentRole,
+                        }),
+                    done: true,
+                  };
+                }
+                return t;
+              });
               // Add new working entry for the current role if not already tracked
               if (progress.currentRole && !thoughts.some((t) => t.agent === progress.currentRole)) {
                 thoughts = [
