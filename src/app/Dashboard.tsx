@@ -961,7 +961,7 @@ export default function Dashboard() {
               </div>
             </div>
 
-            <div className="flex min-h-0 flex-1 flex-col">
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
               {/* trial banner */}
               <div className="border-b border-white/5 p-4">
                 <TrialBanner />
@@ -998,13 +998,16 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {/* console */}
-              <div className="flex min-h-0 flex-1 flex-col p-4">
+              {/* console — was flex-1 (steals all remaining space and pushes
+                  itself off the bottom of the panel on shorter screens). Now
+                  has a fixed-ish height + its own inner scroll, and the outer
+                  aside body scrolls if total content exceeds viewport. */}
+              <div className="flex min-h-0 flex-col p-4">
                 <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.3em] text-white/40">
                   <span>// agent.console</span>
                   <span className="text-cyan-300">streaming</span>
                 </div>
-                <div className="mt-3 flex-1 overflow-y-auto rounded-lg border border-white/5 bg-black/60 p-3 font-mono text-[11px] leading-relaxed">
+                <div className="mt-3 h-64 overflow-y-auto rounded-lg border border-white/5 bg-black/60 p-3 font-mono text-[11px] leading-relaxed">
                   {consoleLines.length > 0 ? (
                     consoleLines.map((l, i) => (
                       <motion.div
