@@ -25,6 +25,7 @@ import { Sidebar } from "./components/dashboard/sidebar";
 import { TopNav } from "./components/dashboard/topnav";
 import { PageHeader } from "./components/dashboard/page-header";
 import { Particles } from "./components/particles";
+import { CodePanel } from "./components/CodePanel";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { PublicKey, SystemProgram, Transaction, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import {
@@ -4469,12 +4470,11 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                                 </button>
                               </div>
                             </div>
-                            <pre
-                              className="min-h-0 min-w-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[12px] leading-relaxed text-white/85"
-                              style={{ wordBreak: "break-word", overflowWrap: "anywhere" }}
-                            >
-                              <code className="block">{a.content}</code>
-                            </pre>
+                            <CodePanel
+                              path={a.path}
+                              content={a.content ?? ""}
+                              language={a.language ?? undefined}
+                            />
                           </div>
                       );
                     })()}
