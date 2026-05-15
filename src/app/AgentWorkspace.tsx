@@ -2365,7 +2365,12 @@ function AgentWorkspaceMissionBody({
             if (progress.streamingReply) {
               const streamRole = progress.streamingReply.role;
               const parsed = parseStreamingArtifact(progress.streamingReply.buffer);
-              if (parsed) {
+              // Only surface the streaming artifact once `content` has actually
+              // started flowing — otherwise the editor shows the file header
+              // with an empty body, which reads as broken ("live indicator but
+              // nothing typing"). Falsey / very-short content means the LLM
+              // is still between `"path"` and the opening `"content":"` quote.
+              if (parsed && parsed.content && parsed.content.length > 2) {
                 setStreamingArtifact({
                   path: parsed.path,
                   content: parsed.content,
@@ -2374,14 +2379,19 @@ function AgentWorkspaceMissionBody({
                 });
               }
               const dialogue = parseStreamingDialogue(progress.streamingReply.buffer);
-              // HiveMind brief-generation phase: the LLM emits plain JSON with
-              // no dialogue field so parseStreamingDialogue returns null. Show
-              // the raw buffer (de-noised) so the user sees movement during
-              // bootstrap instead of a static "generating brief…" line.
+              // HiveMind brief-generation phase: plain JSON with no dialogue
+              // field, so parseStreamingDialogue returns null. Show the raw
+              // buffer (de-noised) so the user sees movement during bootstrap.
               const fallbackText = streamRole === "HiveMind"
                 ? progress.streamingReply.buffer.replace(/^[\s{}"]+/, "").slice(0, 280)
                 : null;
-              const liveText = dialogue?.text || fallbackText;
+              // Cap dialogue at 600 chars — the prompt says 3-5 sentences (≈
+              // 60-100 words). Anything longer means the LLM is dumping its
+              // OUTPUT into the dialogue section (Research listing the whole
+              // competitive landscape, Marketing pasting all the copy, etc).
+              // Truncate so the bubble reads as chat, not a deliverable dump.
+              const cappedDialogue = dialogue?.text ? dialogue.text.slice(0, 600) : null;
+              const liveText = cappedDialogue || fallbackText;
               if (liveText) {
                 setMessages((prev) => prev.map((msg) => {
                   if (msg.id !== hmId) return msg;
@@ -3286,7 +3296,12 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
             if (progress.streamingReply) {
               const streamRole = progress.streamingReply.role;
               const parsed = parseStreamingArtifact(progress.streamingReply.buffer);
-              if (parsed) {
+              // Only surface the streaming artifact once `content` has actually
+              // started flowing — otherwise the editor shows the file header
+              // with an empty body, which reads as broken ("live indicator but
+              // nothing typing"). Falsey / very-short content means the LLM
+              // is still between `"path"` and the opening `"content":"` quote.
+              if (parsed && parsed.content && parsed.content.length > 2) {
                 setStreamingArtifact({
                   path: parsed.path,
                   content: parsed.content,
@@ -3295,14 +3310,19 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                 });
               }
               const dialogue = parseStreamingDialogue(progress.streamingReply.buffer);
-              // HiveMind brief-generation phase: the LLM emits plain JSON with
-              // no dialogue field so parseStreamingDialogue returns null. Show
-              // the raw buffer (de-noised) so the user sees movement during
-              // bootstrap instead of a static "generating brief…" line.
+              // HiveMind brief-generation phase: plain JSON with no dialogue
+              // field, so parseStreamingDialogue returns null. Show the raw
+              // buffer (de-noised) so the user sees movement during bootstrap.
               const fallbackText = streamRole === "HiveMind"
                 ? progress.streamingReply.buffer.replace(/^[\s{}"]+/, "").slice(0, 280)
                 : null;
-              const liveText = dialogue?.text || fallbackText;
+              // Cap dialogue at 600 chars — the prompt says 3-5 sentences (≈
+              // 60-100 words). Anything longer means the LLM is dumping its
+              // OUTPUT into the dialogue section (Research listing the whole
+              // competitive landscape, Marketing pasting all the copy, etc).
+              // Truncate so the bubble reads as chat, not a deliverable dump.
+              const cappedDialogue = dialogue?.text ? dialogue.text.slice(0, 600) : null;
+              const liveText = cappedDialogue || fallbackText;
               if (liveText) {
                 setMessages((prev) => prev.map((msg) => {
                   if (msg.id !== hmId) return msg;
