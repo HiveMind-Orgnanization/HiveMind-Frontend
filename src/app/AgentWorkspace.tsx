@@ -4504,7 +4504,7 @@ You MUST respond with exactly ONE raw JSON object. No markdown fences. No prose 
                         ? {
                             id: `streaming:${streamingArtifact.role}:${streamingArtifact.path}`,
                             missionId: mission.id,
-                            wallet: walletPk ?? "",
+                            wallet: workspaceWalletPk ?? "",
                             agent: streamingArtifact.role,
                             role: streamingArtifact.role,
                             kind: "file",
